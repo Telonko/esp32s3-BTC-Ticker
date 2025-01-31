@@ -41,15 +41,17 @@ void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
             // Update the UI with the latest data
             updatePriceUI(lastRate, highRate, lowRate);
         } else {
-            Serial.printf("%s\n", payload);
+            Serial.printf("[DEBUG] %s\n", payload);
         }
 
         break;
     }
     case WStype_DISCONNECTED:
+        lv_obj_clear_flag(ui_no_websocket, LV_OBJ_FLAG_HIDDEN);
         Serial.println("WebSocket Disconnected");
         break;
     case WStype_CONNECTED:
+        lv_obj_add_flag(ui_no_websocket, LV_OBJ_FLAG_HIDDEN);
         Serial.println("WebSocket Connected");
         // Subscribe to the 24hr ticker stream for BTCUSDT
         webSocket.sendTXT("{\"method\": \"SUBSCRIBE\", \"params\": [\"" + String((char *)currentTicker) + "usdt@ticker\"], \"id\": 1}");
@@ -68,7 +70,7 @@ void initBinanceWebSocket()
     webSocket.disconnect();
     delay(100);
 
-    Serial.printf("[DEBUG] Connecting to websocket %susdt", currentTicker);
+    Serial.printf("[DEBUG] Subscribe to websocket %susdt\n", currentTicker);
     // Initialize WebSocket connection to Binance
     webSocket.beginSSL("stream.binance.com", 9443, "/ws");
     webSocket.onEvent(onWebSocketEvent);

@@ -100,4 +100,24 @@ lv_obj_set_align( ui_img_symbol_btc, LV_ALIGN_CENTER );
 lv_obj_add_flag( ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_ADV_HITTEST );   /// Flags
 lv_obj_clear_flag( ui_img_symbol_btc, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
 
+ui_no_wifi = lv_img_create(ui_ticker);
+lv_img_set_src(ui_no_wifi, &ui_img_376556310);
+lv_obj_set_width( ui_no_wifi, LV_SIZE_CONTENT);  /// 1
+lv_obj_set_height( ui_no_wifi, LV_SIZE_CONTENT);   /// 1
+lv_obj_set_x( ui_no_wifi, 53 );
+lv_obj_set_y( ui_no_wifi, -94 );
+lv_obj_set_align( ui_no_wifi, LV_ALIGN_CENTER );
+lv_obj_add_flag( ui_no_wifi, LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_ADV_HITTEST );   /// Flags
+lv_obj_clear_flag( ui_no_wifi, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
+
+ui_no_websocket = lv_img_create(ui_ticker);
+lv_img_set_src(ui_no_websocket, &ui_img_msg_png);
+lv_obj_set_width( ui_no_websocket, LV_SIZE_CONTENT);  /// 1
+lv_obj_set_height( ui_no_websocket, LV_SIZE_CONTENT);   /// 1
+lv_obj_set_x( ui_no_websocket, 87 );
+lv_obj_set_y( ui_no_websocket, -94 );
+lv_obj_set_align( ui_no_websocket, LV_ALIGN_CENTER );
+lv_obj_add_flag( ui_no_websocket, LV_OBJ_FLAG_ADV_HITTEST );   /// Flags
+lv_obj_clear_flag( ui_no_websocket, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
+
 }

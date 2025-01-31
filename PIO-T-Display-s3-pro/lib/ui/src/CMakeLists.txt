@@ -13,6 +13,8 @@ SET(SOURCES components/ui_comp_labelpricehigh.c
     images/ui_img_213572400.c
     images/ui_img_ethnew_png.c
     images/ui_img_images_btc_png.c
+    images/ui_img_376556310.c
+    images/ui_img_msg_png.c
     fonts/ui_font_Font100.c
     fonts/ui_font_Font25.c
     fonts/ui_font_Font38.c)

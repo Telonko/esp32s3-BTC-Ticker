@@ -9,8 +9,7 @@
 #include "WiFiProvScreen.h"
 #include "BinanceWebSocket.h"
 #include "pin_config.h"
-
-#define resetTime 5000 // 5 seconds for reset trigger
+#include "handleButtons.h"
 
 // Define display and touch hardware specifics
 LilyGo_Class amoled;
@@ -19,12 +18,9 @@ LilyGo_Class amoled;
 const char *pop = "12345678";               // Proof of possession
 const char *service_name = "crypto_ticker"; // Name of your device
 
-unsigned long button1_PressedTime = 0;
-unsigned int button2_PressedCounter = 0;
-bool resetButtonState = false;
-
 void updatePriceUI(float btcRate, float highRate, float lowRate);
 void SysProvEvent(arduino_event_t *sys_event);
+void toggleScreenRotation();
 
 void setup()
 {
@@ -103,7 +99,7 @@ void setup()
     else
     {
         Serial.println("[DEBUG] Device is not provisioned. Starting provisioning...");
-        setupProvisioning(pop, service_name, NULL, false);
+        setupProvisioning(pop, service_name, NULL, true);
     }
 
     // Set up the reset pin
@@ -117,9 +113,6 @@ void loop()
     lv_task_handler();
     delay(5);
 
-    // Handle WebSocket communication
-    handleBinanceWebSocket();
-
     // Update time and date regularly from NTP (e.g., every second)
     static unsigned long lastTimeUpdate = 0;
     if (millis() - lastTimeUpdate > 1000)
@@ -128,34 +121,11 @@ void loop()
         lastTimeUpdate = millis();
     }
 
-    // Check if reset button (GPIO0) is pressed and held for 5 seconds
-    if (digitalRead(PIN_BUTTON_1) == LOW)
-    {
-        if (!resetButtonState)
-        {
-            resetButtonState = true;
-            button1_PressedTime = millis();
-        }
-        else if (millis() - button1_PressedTime >= resetTime)
-        {
-            resetProvisioning(); // Reset Wi-Fi credentials if button held for 5 seconds
-        }
-    }
-    else
-    {
-        resetButtonState = false;
-    }
+    // Handle WebSocket communication
+    handleBinanceWebSocket();
 
-    if (digitalRead(PIN_BUTTON_2) == LOW)
-    {
-        button2_PressedCounter++;
-        if (button2_PressedCounter >= sizeof screenTickers / sizeof *screenTickers)
-        {
-            button2_PressedCounter = 0;
-        }
-        currentTicker = screenTickers[button2_PressedCounter];
-        initBinanceWebSocket();
-    }
+    handleButton1();
+    handleButton2();
 }
 
 // Function to update Bitcoin-related UI elements
@@ -187,4 +157,18 @@ void updateTimeAndDate()
     // Update UI labels (assuming these labels are defined in the `ui.h`)
     lv_label_set_text(ui_Label_time, timeStr); // Update time label on eth screen
     lv_label_set_text(ui_Label_date, dateStr); // Update date label on eth screen
+}
+
+void toggleScreenRotation()
+{
+    switch (amoled.getRotation())
+    {
+    case 0:
+        amoled.setRotation(2);
+        break;
+
+    default:
+        amoled.setRotation(0);
+        break;
+    }
 }

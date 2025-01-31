@@ -53,6 +53,8 @@ extern lv_obj_t *ui_labelPriceLow;
 extern lv_obj_t *ui_Label_text;
 extern lv_obj_t *ui_img_symbol;
 extern lv_obj_t *ui_img_symbol_btc;
+extern lv_obj_t *ui_no_wifi;
+extern lv_obj_t *ui_no_websocket;
 extern lv_obj_t *ui____initial_actions0;
 
 LV_IMG_DECLARE( ui_img_images_logo_png);   // assets/Images/Logo.png
@@ -60,6 +62,8 @@ LV_IMG_DECLARE( ui_img_1283391855);   // assets/Images/bg-2-2.png
 LV_IMG_DECLARE( ui_img_213572400);   // assets/Images/BG-ticker.png
 LV_IMG_DECLARE( ui_img_ethnew_png);   // assets/ethnew.png
 LV_IMG_DECLARE( ui_img_images_btc_png);   // assets/Images/btc.png
+LV_IMG_DECLARE( ui_img_376556310);   // assets/no-wifi.png
+LV_IMG_DECLARE( ui_img_msg_png);   // assets/msg.png
 
 
 LV_FONT_DECLARE( ui_font_Font100);

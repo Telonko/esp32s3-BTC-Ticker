@@ -25,9 +25,9 @@ extern const char *service_name;
 void SysProvEvent(arduino_event_t *sys_event) {
     switch (sys_event->event_id) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            Serial.println("[DEBUG] Wi-Fi connected successfully.");
+            lv_obj_add_flag(ui_no_wifi, LV_OBJ_FLAG_HIDDEN);
+            Serial.printf("[DEBUG] Wi-Fi connected successfully. IP: %s\n", WiFi.localIP());
             updateConnectionStatus("Successfully Connected to Wi-Fi!", "Provisioning Complete", "Success", "softap");
-            Serial.println(WiFi.localIP());
 
             // Start background tasks (e.g., NTP sync) after a short delay
             delay(5000);
@@ -41,6 +41,7 @@ void SysProvEvent(arduino_event_t *sys_event) {
             break;
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            lv_obj_clear_flag(ui_no_wifi, LV_OBJ_FLAG_HIDDEN);
             Serial.println("[DEBUG] Disconnected from Wi-Fi.");
             break;
 
@@ -78,6 +79,8 @@ bool isProvisioned() {
             #else
                 return false;
             #endif
+        } else {
+            return true;
         }
         #endif
     }

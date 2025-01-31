@@ -39,6 +39,8 @@ lv_obj_t *ui_labelPriceLow;
 lv_obj_t *ui_Label_text;
 lv_obj_t *ui_img_symbol;
 lv_obj_t *ui_img_symbol_btc;
+lv_obj_t *ui_no_wifi;
+lv_obj_t *ui_no_websocket;
 lv_obj_t *ui____initial_actions0;
 const lv_img_dsc_t *ui_imgset_1516409835[1] = {&ui_img_1283391855};
 
