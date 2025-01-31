@@ -23,6 +23,8 @@ extern "C" {
 #endif
 
 #include "ui_helpers.h"
+#include "components/ui_comp.h"
+#include "components/ui_comp_hook.h"
 #include "ui_events.h"
 
 // SCREEN: ui_loading
@@ -39,39 +41,25 @@ extern lv_obj_t *ui_TextArea;
 extern lv_obj_t *ui_Image_logo;
 extern lv_obj_t *ui_Label1;
 extern lv_obj_t *ui_Image_mask;
-// SCREEN: ui_crypto
-void ui_crypto_screen_init(void);
-extern lv_obj_t *ui_crypto;
-extern lv_obj_t *ui_Image1;
+// SCREEN: ui_ticker
+void ui_ticker_screen_init(void);
+extern lv_obj_t *ui_ticker;
+extern lv_obj_t *ui_ImageBG;
 extern lv_obj_t *ui_Label_date;
 extern lv_obj_t *ui_Label_time;
-extern lv_obj_t *ui_Label_BTC_Rate;
-extern lv_obj_t *ui_Label_BTC_high;
-extern lv_obj_t *ui_Label_BTC_low;
-void ui_event_img_chart( lv_event_t * e);
-extern lv_obj_t *ui_img_chart;
-extern lv_obj_t *ui_Label_symbol;
+extern lv_obj_t *ui_Label_Price_Rate;
+extern lv_obj_t *ui_LabelPricehigh;
+extern lv_obj_t *ui_labelPriceLow;
+extern lv_obj_t *ui_Label_text;
 extern lv_obj_t *ui_img_symbol;
-// SCREEN: ui_chart
-void ui_chart_screen_init(void);
-extern lv_obj_t *ui_chart;
-extern lv_obj_t *ui_Image3;
-extern lv_obj_t *ui_Label_date1;
-extern lv_obj_t *ui_Label_time1;
-extern lv_obj_t *ui_Container_chart;
-void ui_event_img_crypto( lv_event_t * e);
-extern lv_obj_t *ui_img_crypto;
-extern lv_obj_t *ui_Label_symbol2;
-extern lv_obj_t *ui_img_symbol2;
+extern lv_obj_t *ui_img_symbol_btc;
 extern lv_obj_t *ui____initial_actions0;
 
 LV_IMG_DECLARE( ui_img_images_logo_png);   // assets/Images/Logo.png
 LV_IMG_DECLARE( ui_img_1283391855);   // assets/Images/bg-2-2.png
 LV_IMG_DECLARE( ui_img_213572400);   // assets/Images/BG-ticker.png
-LV_IMG_DECLARE( ui_img_611106281);   // assets/Images/Button-Chart.png
+LV_IMG_DECLARE( ui_img_ethnew_png);   // assets/ethnew.png
 LV_IMG_DECLARE( ui_img_images_btc_png);   // assets/Images/btc.png
-LV_IMG_DECLARE( ui_img_images_bg_png);   // assets/Images/BG.png
-LV_IMG_DECLARE( ui_img_537082870);   // assets/Images/Button-Crypto.png
 
 
 LV_FONT_DECLARE( ui_font_Font100);

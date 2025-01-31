@@ -21,6 +21,7 @@ lv_obj_set_y( ui_Image_logo1, 0 );
 lv_obj_set_align( ui_Image_logo1, LV_ALIGN_CENTER );
 lv_obj_add_flag( ui_Image_logo1, LV_OBJ_FLAG_ADV_HITTEST );   /// Flags
 lv_obj_clear_flag( ui_Image_logo1, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
+lv_img_set_zoom(ui_Image_logo1,164);
 
 ui_Label2 = lv_label_create(ui_loading);
 lv_obj_set_width( ui_Label2, LV_SIZE_CONTENT);  /// 1
@@ -28,7 +29,7 @@ lv_obj_set_height( ui_Label2, LV_SIZE_CONTENT);   /// 1
 lv_obj_set_x( ui_Label2, 54 );
 lv_obj_set_y( ui_Label2, 0 );
 lv_obj_set_align( ui_Label2, LV_ALIGN_CENTER );
-lv_label_set_text(ui_Label2,"Bitcoin\nTicker");
+lv_label_set_text(ui_Label2,"Crypto\nTicker");
 lv_obj_set_style_text_color(ui_Label2, lv_color_hex(0xFFCA41), LV_PART_MAIN | LV_STATE_DEFAULT );
 lv_obj_set_style_text_opa(ui_Label2, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
 lv_obj_set_style_text_font(ui_Label2, &ui_font_Font38, LV_PART_MAIN| LV_STATE_DEFAULT);

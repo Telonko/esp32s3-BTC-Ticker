@@ -3,3 +3,16 @@
 // LVGL version: 8.3.11
 // Project name: BTC-Ticker
 
+#include "../ui.h"
+
+void ui_comp_Labeldate_create_hook( lv_obj_t * comp)
+{
+}
+
+void ui_comp_LabelPricehigh_create_hook( lv_obj_t * comp)
+{
+}
+
+void ui_comp_labelPriceLow_create_hook( lv_obj_t * comp)
+{
+}

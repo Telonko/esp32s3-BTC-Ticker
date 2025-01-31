@@ -10,8 +10,9 @@ void updateConnectionStatus(const char *status, const char *service_name, const 
 bool isProvisioned();  // Checks if Wi-Fi credentials are already provisioned
 void resetProvisioning();  // Resets Wi-Fi provisioning by erasing stored credentials
 
+bool connectToNetwork(const char *ssid, const char *pwd);
+
 void initiateNTPTimeSync();
-void fetchBitcoinPrice(float &btcRate, float &highRate, float &lowRate, void (*updateUI)(float, float, float));
-void updateBitcoinUI(float btcRate, float highRate, float lowRate);
+void updatePriceUI(float btcRate, float highRate, float lowRate);
 
 #endif // WIFI_PROV_HELPER_H

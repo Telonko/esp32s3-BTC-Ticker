@@ -27,32 +27,18 @@ lv_obj_t *ui_Label1;
 lv_obj_t *ui_Image_mask;
 
 
-// SCREEN: ui_crypto
-void ui_crypto_screen_init(void);
-lv_obj_t *ui_crypto;
-lv_obj_t *ui_Image1;
+// SCREEN: ui_ticker
+void ui_ticker_screen_init(void);
+lv_obj_t *ui_ticker;
+lv_obj_t *ui_ImageBG;
 lv_obj_t *ui_Label_date;
 lv_obj_t *ui_Label_time;
-lv_obj_t *ui_Label_BTC_Rate;
-lv_obj_t *ui_Label_BTC_high;
-lv_obj_t *ui_Label_BTC_low;
-void ui_event_img_chart( lv_event_t * e);
-lv_obj_t *ui_img_chart;
-lv_obj_t *ui_Label_symbol;
+lv_obj_t *ui_Label_Price_Rate;
+lv_obj_t *ui_LabelPricehigh;
+lv_obj_t *ui_labelPriceLow;
+lv_obj_t *ui_Label_text;
 lv_obj_t *ui_img_symbol;
-
-
-// SCREEN: ui_chart
-void ui_chart_screen_init(void);
-lv_obj_t *ui_chart;
-lv_obj_t *ui_Image3;
-lv_obj_t *ui_Label_date1;
-lv_obj_t *ui_Label_time1;
-lv_obj_t *ui_Container_chart;
-void ui_event_img_crypto( lv_event_t * e);
-lv_obj_t *ui_img_crypto;
-lv_obj_t *ui_Label_symbol2;
-lv_obj_t *ui_img_symbol2;
+lv_obj_t *ui_img_symbol_btc;
 lv_obj_t *ui____initial_actions0;
 const lv_img_dsc_t *ui_imgset_1516409835[1] = {&ui_img_1283391855};
 
@@ -67,31 +53,18 @@ const lv_img_dsc_t *ui_imgset_1516409835[1] = {&ui_img_1283391855};
 ///////////////////// ANIMATIONS ////////////////////
 
 ///////////////////// FUNCTIONS ////////////////////
-void ui_event_img_chart( lv_event_t * e) {
-    lv_event_code_t event_code = lv_event_get_code(e);lv_obj_t * target = lv_event_get_target(e);
-if ( event_code == LV_EVENT_PRESSED) {
-      _ui_screen_change( &ui_chart, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, &ui_chart_screen_init);
-      load_Screen_chart( e );
-}
-}
-void ui_event_img_crypto( lv_event_t * e) {
-    lv_event_code_t event_code = lv_event_get_code(e);lv_obj_t * target = lv_event_get_target(e);
-if ( event_code == LV_EVENT_PRESSED) {
-      _ui_screen_change( &ui_crypto, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, &ui_crypto_screen_init);
-}
-}
 
 ///////////////////// SCREENS ////////////////////
 
 void ui_init( void )
-{
+{LV_EVENT_GET_COMP_CHILD = lv_event_register_id();
+
 lv_disp_t *dispp = lv_disp_get_default();
 lv_theme_t *theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED), true, LV_FONT_DEFAULT);
 lv_disp_set_theme(dispp, theme);
 ui_loading_screen_init();
 ui_wifiProv_screen_init();
-ui_crypto_screen_init();
-ui_chart_screen_init();
+ui_ticker_screen_init();
 ui____initial_actions0 = lv_obj_create(NULL);
 lv_disp_load_scr( ui_loading);
 }

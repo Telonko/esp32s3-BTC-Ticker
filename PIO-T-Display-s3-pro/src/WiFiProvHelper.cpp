@@ -6,6 +6,10 @@
 #include "TimeHelper.h"
 #include "BinanceWebSocket.h"  // Include the WebSocket header
 
+#if __has_include("secrets.h")
+    #include "secrets.h"
+#endif
+
 extern "C" {
     #include "esp_wifi.h"
 }
@@ -23,6 +27,7 @@ void SysProvEvent(arduino_event_t *sys_event) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             Serial.println("[DEBUG] Wi-Fi connected successfully.");
             updateConnectionStatus("Successfully Connected to Wi-Fi!", "Provisioning Complete", "Success", "softap");
+            Serial.println(WiFi.localIP());
 
             // Start background tasks (e.g., NTP sync) after a short delay
             delay(5000);
@@ -32,7 +37,7 @@ void SysProvEvent(arduino_event_t *sys_event) {
             initBinanceWebSocket();
 
             // Load the main screen (ui_crypto)
-            lv_scr_load(ui_crypto);
+            lv_scr_load(ui_ticker);
             break;
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
@@ -65,8 +70,32 @@ bool isProvisioned() {
 
     if (ret == ESP_OK && strlen((const char *)conf.sta.ssid) > 0) {
         return true;
+    } else if (ret >= ESP_ERR_WIFI_BASE) {
+        #if defined WIFI_SSID
+        if (!connectToNetwork(WIFI_SSID, WIFI_PASSWORD)) {
+            #if defined WIFI_SSID_OFFICE
+                return connectToNetwork(WIFI_SSID_OFFICE, WIFI_PASSWORD_OFFICE);
+            #else
+                return false;
+            #endif
+        }
+        #endif
     }
     return false;
+}
+
+bool connectToNetwork(const char *ssid, const char *pwd) {
+    Serial.printf("Connecting to WiFi %s\n", ssid);
+
+    WiFi.begin(ssid, pwd);
+    // Wait for the connection for up to 10 seconds
+    unsigned long startAttemptTime = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
+        lv_task_handler();  // Handle LVGL tasks to update the screen
+        delay(100);  // Wait 100ms between checks
+    }
+
+    return WiFi.status() == WL_CONNECTED;
 }
 
 void setupProvisioning(const char *pop, const char *service_name, const char *service_key, bool reset_provisioned) {

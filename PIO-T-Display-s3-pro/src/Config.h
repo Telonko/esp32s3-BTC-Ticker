@@ -16,6 +16,6 @@
 //   "MSK-3"    - Moscow Time (UTC+3)
 //   "GMT+4"    - Dubai Time (UTC+4)
 //   "AST-3"    - Arabian Standard Time (Bahrain, UTC+3)
-#define TIME_ZONE "AST-3"  // Set to the desired time zone
+#define TIME_ZONE "UTC-4"  // Set to the desired time zone
 
 #endif // CONFIG_H

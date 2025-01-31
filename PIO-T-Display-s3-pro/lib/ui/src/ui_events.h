@@ -10,8 +10,6 @@
 extern "C" {
 #endif
 
-void load_Screen_chart(lv_event_t * e);
-
 #ifdef __cplusplus
 } /*extern "C"*/
 #endif

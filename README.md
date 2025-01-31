@@ -1,12 +1,16 @@
-# <span style="color:yellow"> BTC Ticker </span>
+# <span style="color:yellow">T Display S3 No Touch - BTC/ETH Ticker </span>
 
 
 <p align="center">
-  <img src="00-Assets/Bitcoin-Ticker.png" alt="Bitcoin Ticker" width="400" />
+  <img src="00-Assets/bitcoin-ticker.jpg" alt="Bitcoin Ticker" width="400" />
 </p>
 
 <p align="center">
-  <img src="00-Assets/Bitcoin-Candle-Chart.png" alt="Bitcoin Candle Chart" width="400" />
+  <img src="00-Assets/eth-ticker.jpg" alt="eth ticker" width="400" />
+</p>
+
+<p align="center">
+  <img src="00-Assets/esp32s3r8.avif" alt="esp32s3r8" width="400"/>
 </p>
 
 💡 [Join the discussion](https://github.com/nishad2m8/BTC-Ticker/discussions) and share your thoughts and ideas! 
@@ -36,7 +40,6 @@ This project uses a LilyGo AMOLED display (with plans to support more displays i
 
 - <span style="color:yellow"> **Wi-Fi Provisioning**</span>: Allows Wi-Fi configuration through a QR code on the display.
 - <span style="color:yellow">**Binance WebSocket**</span>: Fetches real-time Bitcoin prices and updates the UI.
-- <span style="color:yellow">**Binance Candle Stick Data**</span>: Displays candlestick chart information for Bitcoin.
 - <span style="color:yellow">**Time and Date**</span>: Updates time and date from an NTP server based on the configured time zone.
 
 
