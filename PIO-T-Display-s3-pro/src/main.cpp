@@ -20,9 +20,12 @@
 #include "IconStore.h"
 #include "OtaGuard.h"
 #include "MarketIndex.h"
+#include "UiLock.h"
 
 // Define display and touch hardware specifics
 LilyGo_Class amoled;
+
+SemaphoreHandle_t uiMutex = nullptr;
 
 const uint8_t default_brightness = 100;
 const uint8_t low_battery_brightness = 20;
@@ -101,6 +104,10 @@ static void logResetReason()
 
 void setup()
 {
+    // The whole setup runs holding the UI lock, like every loop() iteration
+    uiMutex = xSemaphoreCreateMutex();
+    xSemaphoreTake(uiMutex, portMAX_DELAY);
+
     // Full speed while connecting; wifiLoop() drops to 80 MHz once connected
     setCpuFrequencyMhz(240);
 
@@ -151,9 +158,22 @@ void setup()
     // Set up the reset pin
     pinMode(PIN_BUTTON_1, INPUT_PULLUP);
     pinMode(PIN_BUTTON_2, INPUT_PULLUP);
+
+    xSemaphoreGive(uiMutex);
 }
 
+static void uiLoop();
+
 void loop()
+{
+    {
+        UiLock lock;
+        uiLoop();
+    }
+    delay(5); // the web server task takes the lock in between
+}
+
+static void uiLoop()
 {
     // A long iteration freezes the screen: log it
     static unsigned long lastLoop = 0;
@@ -164,12 +184,17 @@ void loop()
 
     // Handle LVGL tasks
     lv_task_handler();
-    delay(5);
 
     wifiLoop();
     syncScreen();
-    webConfigLoop();
     alertLoop();
+
+    // An alert flashes the whole screen (follows the blink); afterwards the
+    // normal level comes back at once
+    static bool alertWasActive = false;
+    if (alertActive() || alertWasActive)
+        updateBrightness();
+    alertWasActive = alertActive();
 
     // Update time, battery and Wi-Fi icon once per second; labels are redrawn only on change
     static unsigned long lastTimeUpdate = 0;
@@ -402,6 +427,14 @@ static bool isNightTime()
 // Brightness = the lowest of: location default, night mode, low battery
 void updateBrightness()
 {
+    if (alertActive())
+    {
+        uint8_t level = alertScreenBrightness();
+        if (level != amoled.getBrightness())
+            amoled.setBrightness(level);
+        return;
+    }
+
     uint8_t brightness = default_brightness;
     if (WiFi.status() == WL_CONNECTED)
     {

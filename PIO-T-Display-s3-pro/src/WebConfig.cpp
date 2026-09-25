@@ -14,6 +14,8 @@
 #include <ui.h>
 #include "TimeHelper.h"
 #include "OtaGuard.h"
+#include "UiLock.h"
+#include "Alerts.h"
 
 #define WEB_USER "admin"
 #define WEB_REALM "ticker"
@@ -25,10 +27,18 @@ static WebServer server(80);
 static bool started = false;
 static String webPassword; // empty = page is not protected yet
 
+// webPassword is changed by the UI thread too (button 1 reset)
+static String currentPassword()
+{
+    UiLock lock;
+    return webPassword;
+}
+
 // Digest auth: the password never goes over the network in clear text
 static bool checkAuth()
 {
-    if (webPassword.isEmpty() || server.authenticate(WEB_USER, webPassword.c_str()))
+    String password = currentPassword();
+    if (password.isEmpty() || server.authenticate(WEB_USER, password.c_str()))
         return true;
     // Sent as text/html without a charset: declare it in the body
     server.requestAuthentication(DIGEST_AUTH, WEB_REALM,
@@ -150,8 +160,12 @@ static void handleRoot()
     if (!checkAuth())
         return;
 
+    // Settings, prices and LVGL-side state are read under the UI lock; the
+    // page is sent without it (slow over weak Wi-Fi)
     String html;
     html.reserve(4096);
+    {
+    UiLock lock;
     html += F("<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\">"
               "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
               "<title>Крипто-тикер</title><style>"
@@ -208,8 +222,10 @@ static void handleRoot()
         html += "</td><td><input name=\"a_" + String(name) + "\" inputmode=\"decimal\" value=\"" + formatNumber(settings.alerts[i].above) + "\"></td>";
         html += "<td><input name=\"b_" + String(name) + "\" inputmode=\"decimal\" value=\"" + formatNumber(settings.alerts[i].below) + "\"></td></tr>";
     }
-    html += F("</table><small>Срабатывает один раз: экран переключается на пару и мигает ценой. "
-              "Кнопка гасит мигание.</small>");
+    html += F("</table><small>Срабатывает один раз: экран переключается на пару, 60 секунд мигает "
+              "ценой и всей яркостью (ночной режим не мешает). Кнопка гасит мигание.</small>");
+    html += "<label>Яркость вспышки алерта (1–255)</label><input name=\"ab\" type=\"number\" min=\"1\" max=\"255\" value=\"" +
+            String(alertBrightnessGet()) + "\">";
 
     html += F("<h3>Ночной режим</h3><div class=\"row\">");
     html += "<div><label>С (час)</label><input name=\"ns\" type=\"number\" min=\"0\" max=\"23\" value=\"" + String(settings.nightStartHour) + "\"></div>";
@@ -241,15 +257,14 @@ static void handleRoot()
               "<small>Логин: " WEB_USER ". Не меньше 6 символов. Забыли — удерживайте кнопку 1 пять секунд: "
               "пароль страницы сбросится, а плата поднимет свою сеть для настройки.</small>"
               "<br><button type=\"submit\">Сменить пароль</button></form></body></html>");
+    }
 
     server.send(200, "text/html; charset=utf-8", html);
 }
 
-static void handleSave()
+// Returns an error text or nullptr; runs under the UI lock
+static const char *applySettings()
 {
-    if (!checkAuth())
-        return;
-
     Settings updated = settings;
 
     // Ticker list: keep existing alerts of pairs that stay in the list
@@ -294,14 +309,13 @@ static void handleSave()
     }
 
     if (updated.tickerCount == 0)
-    {
-        server.send(400, "text/plain; charset=utf-8", "Нужна хотя бы одна пара");
-        return;
-    }
+        return "Нужна хотя бы одна пара";
 
     updated.nightStartHour = constrain(server.arg("ns").toInt(), 0, 23);
     updated.nightEndHour = constrain(server.arg("ne").toInt(), 0, 23);
     updated.nightBrightness = constrain(server.arg("nb").toInt(), 1, 255);
+    if (server.hasArg("ab"))
+        alertBrightnessSet(constrain(server.arg("ab").toInt(), 1, 255));
 
     // Only zones from the list (or the current one) are accepted
     String tz = server.arg("tz");
@@ -329,6 +343,24 @@ static void handleSave()
     setTickerInfo(); // re-publishes streams
 
     Serial.println("[WEB] Settings saved");
+    return nullptr;
+}
+
+static void handleSave()
+{
+    if (!checkAuth())
+        return;
+
+    const char *error;
+    {
+        UiLock lock;
+        error = applySettings();
+    }
+    if (error)
+    {
+        server.send(400, "text/plain; charset=utf-8", error);
+        return;
+    }
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -338,6 +370,8 @@ static void handleWifiSave()
     if (!checkAuth())
         return;
 
+    {
+    UiLock lock; // wifiList and the Wi-Fi state machine belong to loop()
     WifiList updated;
     memset(&updated, 0, sizeof(updated));
 
@@ -374,6 +408,7 @@ static void handleWifiSave()
     wifiRetryNow();
 
     Serial.printf("[WEB] Wi-Fi list saved (%d networks)\n", wifiList.count);
+    }
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -390,11 +425,14 @@ static void handlePassword()
         return;
     }
 
-    Preferences prefs;
-    prefs.begin(PREFS_NAMESPACE, false);
-    prefs.putString(PREFS_PASSWORD_KEY, p1);
-    prefs.end();
-    webPassword = p1;
+    {
+        UiLock lock;
+        Preferences prefs;
+        prefs.begin(PREFS_NAMESPACE, false);
+        prefs.putString(PREFS_PASSWORD_KEY, p1);
+        prefs.end();
+        webPassword = p1;
+    }
 
     Serial.println("[WEB] Password changed");
     server.sendHeader("Location", "/");
@@ -427,7 +465,8 @@ static void handleIconUploadChunk(HTTPUpload &upload)
 {
     if (upload.status == UPLOAD_FILE_START)
     {
-        uploadAuthorized = webPassword.isEmpty() || server.authenticate(WEB_USER, webPassword.c_str());
+        String password = currentPassword();
+        uploadAuthorized = password.isEmpty() || server.authenticate(WEB_USER, password.c_str());
         uploadLen = 0;
         uploadTooBig = false;
         if (!uploadBuf)
@@ -481,7 +520,10 @@ static void handleIconUploadDone()
     }
 
     Serial.printf("[WEB] Icon for %s saved (%u bytes)\n", name.c_str(), len);
-    refreshIfShown(name);
+    {
+        UiLock lock;
+        refreshIfShown(name);
+    }
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -516,8 +558,8 @@ static void otaShowProgress(size_t bytes)
     // Firmware is ~2.2 MB: show MB with one decimal ("OTA 1.3M", 8 chars)
     char text[16];
     snprintf(text, sizeof(text), "OTA %.1fM", bytes / 1048576.0);
+    UiLock lock;
     topStatusShow(text);
-    lv_refr_now(NULL); // the loop is blocked while the upload runs
 }
 
 static void handleOtaChunk(HTTPUpload &upload)
@@ -527,7 +569,8 @@ static void handleOtaChunk(HTTPUpload &upload)
         otaOk = false;
         otaError = "";
         otaBytes = 0;
-        otaAuthorized = webPassword.isEmpty() || server.authenticate(WEB_USER, webPassword.c_str());
+        String password = currentPassword();
+        otaAuthorized = password.isEmpty() || server.authenticate(WEB_USER, password.c_str());
         if (!otaAuthorized)
             return;
         Serial.printf("[OTA] Start: %s\n", upload.filename.c_str());
@@ -575,7 +618,10 @@ static void handleOtaDone()
     {
         if (Update.isRunning())
             Update.abort();
-        setTickerInfo(); // redraws the price and the 24 h change
+        {
+            UiLock lock;
+            setTickerInfo(); // redraws the price and the 24 h change
+        }
         server.send(400, "text/plain; charset=utf-8", "Ошибка обновления: " + (otaError.length() ? otaError : String("нет файла")));
         return;
     }
@@ -608,6 +654,7 @@ static void handleIconDelete()
     if (validIconName(name))
     {
         iconDelete(name.c_str());
+        UiLock lock;
         refreshIfShown(name);
     }
     server.sendHeader("Location", "/");
@@ -636,6 +683,17 @@ void webConfigResetPassword()
     prefs.remove(PREFS_PASSWORD_KEY);
     prefs.end();
     webPassword = "";
+}
+
+// Own task: a slow or stalled client (the library waits for upload data
+// without a timeout) blocks only this task, not the screen
+static void webTask(void *)
+{
+    for (;;)
+    {
+        server.handleClient();
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
 }
 
 void webConfigBegin()
@@ -673,13 +731,8 @@ void webConfigBegin()
         }
         server.send(404, "text/plain", "Not found"); });
     server.begin();
+    xTaskCreatePinnedToCore(webTask, "web", 8192, nullptr, 1, nullptr, 0);
 
     Serial.printf("[WEB] Settings: http://%s.local, http://%s (setup AP: http://%s)\n", WEB_CONFIG_HOSTNAME,
                   WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str());
-}
-
-void webConfigLoop()
-{
-    if (started)
-        server.handleClient();
 }

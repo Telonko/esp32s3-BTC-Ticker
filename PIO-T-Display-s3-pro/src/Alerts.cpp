@@ -3,14 +3,47 @@
 #include <ui.h>
 #include "Settings.h"
 #include "BinanceWebSocket.h"
+#include <Preferences.h>
 
 #define ALERT_BLINK_DURATION_MS 60000
 #define ALERT_BLINK_PERIOD_MS 400
+#define ALERT_BRIGHTNESS_DEFAULT 200
+#define ALERT_DARK_BRIGHTNESS 3
+#define PREFS_NAMESPACE "ticker"
+#define PREFS_ALERT_BRIGHTNESS_KEY "alertbr"
 
 static bool active = false;
 static unsigned long startedAt = 0;
 static unsigned long lastToggle = 0;
 static bool hidden = false;
+static int alertBrightness = -1; // loaded from NVS on first use
+
+uint8_t alertBrightnessGet()
+{
+    if (alertBrightness < 0)
+    {
+        Preferences prefs;
+        prefs.begin(PREFS_NAMESPACE, false);
+        alertBrightness = prefs.getUChar(PREFS_ALERT_BRIGHTNESS_KEY, ALERT_BRIGHTNESS_DEFAULT);
+        prefs.end();
+    }
+    return alertBrightness;
+}
+
+void alertBrightnessSet(uint8_t level)
+{
+    level = max<uint8_t>(level, 1);
+    alertBrightness = level;
+    Preferences prefs;
+    prefs.begin(PREFS_NAMESPACE, false);
+    prefs.putUChar(PREFS_ALERT_BRIGHTNESS_KEY, level);
+    prefs.end();
+}
+
+uint8_t alertScreenBrightness()
+{
+    return hidden ? ALERT_DARK_BRIGHTNESS : alertBrightnessGet();
+}
 
 static void fire(int idx, const char *direction, double threshold, double price)
 {
@@ -21,6 +54,7 @@ static void fire(int idx, const char *direction, double threshold, double price)
     setTickerInfo(); // also re-publishes streams: this pair may not need streaming anymore
 
     active = true;
+    hidden = true; // first toggle shows the price at full alert brightness
     startedAt = millis();
     lastToggle = 0;
 }
