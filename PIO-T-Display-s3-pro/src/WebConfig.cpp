@@ -9,6 +9,10 @@
 #include "IconStore.h"
 #include "CoinNames.h"
 #include <LittleFS.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
+#include <ui.h>
+#include "TimeHelper.h"
 
 #define WEB_USER "admin"
 #define WEB_REALM "ticker"
@@ -128,6 +132,17 @@ static void appendIconSection(String &html)
               "Своя иконка заменяет встроенную (BTC, ETH).</small>");
 }
 
+static void appendFirmwareSection(String &html)
+{
+    char build[9] = {0};
+    esp_ota_get_app_elf_sha256(build, sizeof(build)); // unique per build
+    html += F("<h3>Прошивка</h3><form method=\"post\" enctype=\"multipart/form-data\" action=\"/update\" class=\"up\">"
+              "<input type=\"file\" name=\"f\" accept=\".bin\" required><button type=\"submit\">Обновить</button></form>");
+    html += "<small>Сейчас: сборка " + String(build) + ", работает " + String(millis() / 60000) + " мин. "
+            "Файл — .pio/build/T-Display-AMOLED/firmware.bin. Загрузка занимает около минуты, "
+            "потом плата перезагрузится. Не выключайте питание.</small>";
+}
+
 static void handleRoot()
 {
     if (!checkAuth())
@@ -149,6 +164,7 @@ static void handleRoot()
               ".up{display:flex;gap:6px;align-items:center;margin:0}.up input{font-size:13px;padding:4px}"
               ".up button,button.sec{margin:0;padding:6px 10px;font-size:14px}button.sec{background:#444;color:#eee}"
               ".ico{width:30px;text-align:center}"
+              "select{width:100%;padding:8px;margin:4px 0;background:#222;color:#eee;border:1px solid #444;border-radius:6px;font-size:16px}"
               "</style></head><body><h2>Крипто-тикер</h2>");
     if (webPassword.isEmpty())
         html += F("<p class=\"warn\">Страница открыта всем в сети — задайте пароль внизу.</p>");
@@ -197,11 +213,25 @@ static void handleRoot()
     html += "<div><label>С (час)</label><input name=\"ns\" type=\"number\" min=\"0\" max=\"23\" value=\"" + String(settings.nightStartHour) + "\"></div>";
     html += "<div><label>До (час)</label><input name=\"ne\" type=\"number\" min=\"0\" max=\"23\" value=\"" + String(settings.nightEndHour) + "\"></div>";
     html += "<div><label>Яркость</label><input name=\"nb\" type=\"number\" min=\"1\" max=\"255\" value=\"" + String(settings.nightBrightness) + "\"></div>";
-    html += F("</div><small>Одинаковые часы — ночной режим выключен.</small>"
-              "<br><button type=\"submit\">Сохранить</button></form>");
+    html += F("</div><small>Одинаковые часы — ночной режим выключен.</small>");
+
+    html += F("<h3>Часовой пояс</h3><select name=\"tz\">");
+    const char *currentTz = timeZoneGet();
+    bool listed = false;
+    for (int i = 0; i < timeZoneCount; i++)
+    {
+        bool selected = strcmp(timeZones[i].posix, currentTz) == 0;
+        listed |= selected;
+        html += "<option value=\"" + htmlEscape(timeZones[i].posix) + "\"" + (selected ? " selected" : "") + ">" +
+                timeZones[i].label + "</option>";
+    }
+    if (!listed)
+        html += "<option value=\"" + htmlEscape(currentTz) + "\" selected>Текущий: " + htmlEscape(currentTz) + "</option>";
+    html += F("</select><br><button type=\"submit\">Сохранить</button></form>");
 
     appendIconSection(html);
     appendWifiSection(html);
+    appendFirmwareSection(html);
 
     html += F("<h3>Пароль страницы</h3><form method=\"post\" action=\"/password\"><div class=\"row\">"
               "<div><input name=\"p1\" type=\"password\" autocomplete=\"new-password\" placeholder=\"Новый пароль\"></div>"
@@ -270,6 +300,17 @@ static void handleSave()
     updated.nightStartHour = constrain(server.arg("ns").toInt(), 0, 23);
     updated.nightEndHour = constrain(server.arg("ne").toInt(), 0, 23);
     updated.nightBrightness = constrain(server.arg("nb").toInt(), 1, 255);
+
+    // Only zones from the list (or the current one) are accepted
+    String tz = server.arg("tz");
+    if (tz.length() && tz != timeZoneGet())
+    {
+        for (int i = 0; i < timeZoneCount; i++)
+        {
+            if (tz == timeZones[i].posix)
+                timeZoneSet(timeZones[i].posix);
+        }
+    }
 
     // Keep showing the same pair if it is still in the list
     const char *shown = settings.tickers[currentTicker];
@@ -459,6 +500,103 @@ public:
     void upload(WebServer &, String, HTTPUpload &upload) override { handleIconUploadChunk(upload); }
 };
 
+// Firmware update (OTA): written into the other app partition, the board
+// boots from it after a restart. Same multipart-only handler as for icons.
+static bool otaAuthorized = false;
+static bool otaOk = false;
+static String otaError;
+static size_t otaBytes = 0; // upload.totalSize is updated after the callback
+
+void topStatusShow(const char *text); // main.cpp
+
+static void otaShowProgress(size_t bytes)
+{
+    // Firmware is ~2.2 MB: show MB with one decimal ("OTA 1.3M", 8 chars)
+    char text[16];
+    snprintf(text, sizeof(text), "OTA %.1fM", bytes / 1048576.0);
+    topStatusShow(text);
+    lv_refr_now(NULL); // the loop is blocked while the upload runs
+}
+
+static void handleOtaChunk(HTTPUpload &upload)
+{
+    if (upload.status == UPLOAD_FILE_START)
+    {
+        otaOk = false;
+        otaError = "";
+        otaBytes = 0;
+        otaAuthorized = webPassword.isEmpty() || server.authenticate(WEB_USER, webPassword.c_str());
+        if (!otaAuthorized)
+            return;
+        Serial.printf("[OTA] Start: %s\n", upload.filename.c_str());
+        setCpuFrequencyMhz(240); // faster flash writes; the reboot resets it
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN))
+            otaError = Update.errorString();
+        otaShowProgress(0);
+    }
+    else if (upload.status == UPLOAD_FILE_WRITE && otaAuthorized && otaError.isEmpty())
+    {
+        // ESP32 app images start with 0xE9; Update's own error for other
+        // files ("Flash Read Failed") says nothing
+        if (otaBytes == 0 && upload.buf[0] != 0xE9)
+        {
+            otaError = "Это не файл прошивки ESP32";
+            Update.abort();
+            return;
+        }
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize)
+            otaError = Update.errorString();
+        size_t before = otaBytes;
+        otaBytes += upload.currentSize;
+        if (before / 65536 != otaBytes / 65536)
+            otaShowProgress(otaBytes);
+    }
+    else if (upload.status == UPLOAD_FILE_END && otaAuthorized && otaError.isEmpty())
+    {
+        otaOk = Update.end(true);
+        if (!otaOk)
+            otaError = Update.errorString();
+        Serial.printf("[OTA] End: %u bytes, %s\n", (unsigned)otaBytes, otaOk ? "OK" : otaError.c_str());
+    }
+    else if (upload.status == UPLOAD_FILE_ABORTED)
+    {
+        Update.abort();
+        otaError = "Загрузка прервана";
+    }
+}
+
+static void handleOtaDone()
+{
+    if (!checkAuth())
+        return;
+    if (!otaOk)
+    {
+        if (Update.isRunning())
+            Update.abort();
+        setTickerInfo(); // redraws the price and the 24 h change
+        server.send(400, "text/plain; charset=utf-8", "Ошибка обновления: " + (otaError.length() ? otaError : String("нет файла")));
+        return;
+    }
+    server.send(200, "text/html; charset=utf-8",
+                "<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"20;url=/\">"
+                "<p>Прошивка загружена, плата перезагружается. Страница обновится через 20 секунд.</p>");
+    delay(500);
+    ESP.restart();
+}
+
+class OtaUploadHandler : public RequestHandler
+{
+public:
+    bool canHandle(HTTPMethod method, String uri) override { return method == HTTP_POST && uri == "/update"; }
+    bool canUpload(String uri) override { return uri == "/update"; }
+    bool handle(WebServer &, HTTPMethod, String) override
+    {
+        handleOtaDone();
+        return true;
+    }
+    void upload(WebServer &, String, HTTPUpload &upload) override { handleOtaChunk(upload); }
+};
+
 static void handleIconDelete()
 {
     if (!checkAuth())
@@ -518,6 +656,7 @@ void webConfigBegin()
     server.on("/password", HTTP_POST, handlePassword);
     server.on("/icon", HTTP_GET, handleIconGet);
     server.addHandler(new IconUploadHandler());
+    server.addHandler(new OtaUploadHandler());
     server.on("/icon/delete", HTTP_POST, handleIconDelete);
     server.onNotFound([]()
                       {

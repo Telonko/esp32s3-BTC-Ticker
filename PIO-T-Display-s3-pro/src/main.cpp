@@ -34,11 +34,17 @@ const int low_battery_percent = 10;
 
 static int lastBatteryPercent = 100;
 
+// 24 h change in %, top row between the battery and the pair name
+static lv_obj_t *changeLabel = nullptr;
+#define COLOR_UP 0x3FCF6E
+#define COLOR_DOWN 0xE5484D
+
 void toggleScreenRotation();
 void startApp();
 void syncScreen();
 void updateBrightness();
 void pixelShiftStep();
+static void updateChangeVisibility();
 
 static const char *resetReasonName(uint8_t reason)
 {
@@ -178,6 +184,7 @@ void loop()
         }
 
         updateBrightness();
+        updateChangeVisibility();
 
         static unsigned long lastBatteryLog = 0;
         if (lastBatteryLog == 0 || millis() - lastBatteryLog > 30000)
@@ -213,8 +220,38 @@ void loop()
     handleButton2();
 }
 
+static void createChangeLabel()
+{
+    // Font25 is monospaced, 15 px per char: "+2.35%" = 90 px. The no-Wi-Fi /
+    // no-connection icons use the same spot (x ~300-370), see updateChangeVisibility()
+    changeLabel = lv_label_create(ui_ticker);
+    lv_obj_set_pos(changeLabel, 226, 10);
+    lv_obj_set_style_text_font(changeLabel, &ui_font_Font25, 0);
+    lv_label_set_text(changeLabel, "");
+}
+
+// Status text (firmware update) in place of the 24 h change; the next price
+// update restores the change
+void topStatusShow(const char *text)
+{
+    lv_obj_set_style_text_color(changeLabel, lv_color_hex(0xFFCA41), 0);
+    lv_label_set_text(changeLabel, text);
+    lv_obj_clear_flag(changeLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Hidden while a connection problem icon is shown: the value is stale then
+static void updateChangeVisibility()
+{
+    bool problem = !lv_obj_has_flag(ui_no_wifi, LV_OBJ_FLAG_HIDDEN) ||
+                   !lv_obj_has_flag(ui_no_websocket, LV_OBJ_FLAG_HIDDEN);
+    if (problem)
+        lv_obj_add_flag(changeLabel, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_clear_flag(changeLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
 // Function to update Bitcoin-related UI elements
-void updatePriceUI(double btcRate, double highRate, double lowRate)
+void updatePriceUI(double btcRate, double highRate, double lowRate, double openRate)
 {
     if (btcRate <= 0)
     {
@@ -222,7 +259,20 @@ void updatePriceUI(double btcRate, double highRate, double lowRate)
         lv_label_set_text(ui_Label_Price_Rate, "--");
         lv_label_set_text(ui_LabelPricehigh, "--");
         lv_label_set_text(ui_labelPriceLow, "--");
+        lv_label_set_text(changeLabel, "");
         return;
+    }
+
+    // Same as Binance: change against the price 24 h ago
+    if (openRate > 0)
+    {
+        double change = (btcRate - openRate) / openRate * 100;
+        lv_obj_set_style_text_color(changeLabel, lv_color_hex(change >= 0 ? COLOR_UP : COLOR_DOWN), 0);
+        lv_label_set_text_fmt(changeLabel, fabs(change) >= 10 ? "%+.1f%%" : "%+.2f%%", change);
+    }
+    else
+    {
+        lv_label_set_text(changeLabel, "");
     }
 
     // Cheap coins (DOGE, SHIB...) need more decimals
@@ -301,6 +351,7 @@ void startApp()
     initBinanceWebSocket(); // Starts the network task
     chartViewInit();
     iconViewInit();
+    createChangeLabel();
     setTickerInfo();
     updateBrightness();
     lv_scr_load(ui_ticker);

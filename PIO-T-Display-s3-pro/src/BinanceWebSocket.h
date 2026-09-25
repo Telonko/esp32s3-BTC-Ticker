@@ -10,7 +10,7 @@
 extern int currentTicker;
 
 // Externally defined function to update the UI
-void updatePriceUI(double lastRate, double highRate, double lowRate);
+void updatePriceUI(double lastRate, double highRate, double lowRate, double openRate);
 
 // Starts the network task (once). The WebSocket lives entirely in that task,
 // so TLS handshakes and reconnects never block the LVGL loop.

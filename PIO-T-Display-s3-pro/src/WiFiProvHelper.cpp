@@ -242,6 +242,20 @@ void wifiLoop() {
             Serial.printf("[WIFI]   seen \"%s\" %d dBm ch %d\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i));
         }
 
+        // Strongest hidden AP (empty SSID): joining it by BSSID and channel
+        // works where a probe for the hidden SSID gets no answer
+        int hidden = -1;
+        for (int i = 0; i < found; i++) {
+            if (WiFi.SSID(i).length() == 0 && (hidden < 0 || WiFi.RSSI(i) > WiFi.RSSI(hidden)))
+                hidden = i;
+        }
+        uint8_t hiddenBssid[6];
+        int32_t hiddenChannel = 0;
+        if (hidden >= 0) {
+            memcpy(hiddenBssid, WiFi.BSSID(hidden), 6);
+            hiddenChannel = WiFi.channel(hidden);
+        }
+
         int best = -1;
         int bestRssi = -1000;
         for (int i = 0; i < found; i++) {
@@ -255,21 +269,30 @@ void wifiLoop() {
         WiFi.scanDelete();
 
         if (best < 0) {
-            // Not in the scan: still try each known network directly, like a
-            // plain WiFi.begin() would (hidden SSID or a missed beacon)
+            // Not in the scan: still try each known network, as a hidden one
+            // (via the strongest hidden AP) or directly (missed beacon)
             if (blindNext < count) {
                 best = blindNext++;
-                Serial.printf("[WIFI] %s not seen in scan, trying anyway\n", known[best].ssid);
-            } else {
-                blindNext = 0;
-                Serial.printf("[WIFI] No known network in range (%d found), retry in %d s\n", found, RETRY_DELAY_MS / 1000);
-                attemptFailed(RETRY_DELAY_MS);
+                if (hidden >= 0) {
+                    Serial.printf("[WIFI] %s not seen in scan, trying via hidden AP %02X:%02X:%02X:%02X:%02X:%02X ch %d\n",
+                                  known[best].ssid, hiddenBssid[0], hiddenBssid[1], hiddenBssid[2], hiddenBssid[3],
+                                  hiddenBssid[4], hiddenBssid[5], hiddenChannel);
+                    WiFi.begin(known[best].ssid, known[best].pass, hiddenChannel, hiddenBssid);
+                } else {
+                    Serial.printf("[WIFI] %s not seen in scan, trying anyway\n", known[best].ssid);
+                    WiFi.begin(known[best].ssid, known[best].pass);
+                }
+                WiFi.setTxPower(WIFI_TX_POWER);
+                setState(W_CONNECTING);
                 break;
             }
-        } else {
-            Serial.printf("[WIFI] Connecting to %s (%d dBm)\n", known[best].ssid, bestRssi);
+            blindNext = 0;
+            Serial.printf("[WIFI] No known network in range (%d found), retry in %d s\n", found, RETRY_DELAY_MS / 1000);
+            attemptFailed(RETRY_DELAY_MS);
+            break;
         }
 
+        Serial.printf("[WIFI] Connecting to %s (%d dBm)\n", known[best].ssid, bestRssi);
         WiFi.begin(known[best].ssid, known[best].pass);
         WiFi.setTxPower(WIFI_TX_POWER);
         setState(W_CONNECTING);
