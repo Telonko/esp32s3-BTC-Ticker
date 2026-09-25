@@ -25,6 +25,7 @@ static const struct
 #define CHARGE_WINDOW 5         // 5 samples = 2 minutes
 #define CHARGE_RISE_MV 8        // rising at least this much -> charging
 #define CHARGE_FALL_MV -3       // falling at least this much -> not charging
+#define FULL_MV 4120            // a full battery on USB stays about here
 
 static float filteredMv = 0;
 static int shownPercent = -1;
@@ -32,6 +33,8 @@ static uint16_t trend[CHARGE_WINDOW];
 static uint8_t trendCount = 0;
 static unsigned long lastTrendSample = 0;
 static bool charging = false;
+static int trendDelta = 0; // mV over the last CHARGE_WINDOW samples
+static bool trendReady = false;
 
 static void updateChargingTrend()
 {
@@ -49,6 +52,8 @@ static void updateChargingTrend()
         return;
 
     int delta = (int)trend[CHARGE_WINDOW - 1] - (int)trend[0];
+    trendDelta = delta;
+    trendReady = true;
     if (delta >= CHARGE_RISE_MV)
         charging = true;
     else if (delta <= CHARGE_FALL_MV)
@@ -131,4 +136,12 @@ uint32_t batteryMilliVolts()
 bool batteryCharging()
 {
     return charging;
+}
+
+bool batteryExternalPower()
+{
+    if (charging)
+        return true;
+    // On battery the voltage keeps dropping under load
+    return filteredMv >= FULL_MV && (!trendReady || trendDelta > CHARGE_FALL_MV);
 }

@@ -46,6 +46,7 @@ void syncScreen();
 void updateBrightness();
 void pixelShiftStep();
 static void updateChangeVisibility();
+static void updateWifiPowerSave();
 
 static const char *resetReasonName(uint8_t reason)
 {
@@ -187,6 +188,7 @@ void loop()
 
         updateBrightness();
         updateChangeVisibility();
+        updateWifiPowerSave();
         otaGuardLoop();
 
         static unsigned long lastBatteryLog = 0;
@@ -285,6 +287,19 @@ void updatePriceUI(double btcRate, double highRate, double lowRate, double openR
     // Update High and Low Rates (no "High:" or "Low:" prefixes, just the price)
     lv_label_set_text_fmt(ui_LabelPricehigh, format, highRate);
     lv_label_set_text_fmt(ui_labelPriceLow, format, lowRate);
+}
+
+// Wi-Fi modem sleep saves tens of mA but misses data at a weak signal:
+// off on external power, on when running from the battery
+static void updateWifiPowerSave()
+{
+    static int8_t shown = -1;
+    int8_t external = batteryExternalPower() ? 1 : 0;
+    if (external == shown)
+        return;
+    shown = external;
+    WiFi.setSleep(!external);
+    Serial.printf("[WIFI] %s power: modem sleep %s\n", external ? "External" : "Battery", external ? "off" : "on");
 }
 
 static bool isNightTime()

@@ -13,4 +13,8 @@ uint32_t batteryMilliVolts();
 // voltage keeps rising. A full battery on USB (voltage flat) reads as false.
 bool batteryCharging();
 
+// Heuristic as well: charging, or nearly full and not dropping (full battery
+// on USB). Right after unplugging it may stay true for up to ~2 minutes.
+bool batteryExternalPower();
+
 #endif // BATTERY_H
