@@ -5,6 +5,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "Settings.h"
+#include "MarketIndex.h"
 
 #define HISTORY_TASK_STACK 12288
 #define RETRY_DELAY_MS 60000
@@ -12,9 +13,9 @@
 struct Series
 {
     char name[TICKER_LEN];
-    float points[HISTORY_POINTS];
+    Candle candles[HISTORY_POINTS];
     uint8_t count;
-    unsigned long bucketStart; // millis() when the last point's bucket began
+    unsigned long bucketStart; // millis() when the last candle began
     unsigned long nextTry;     // loader: retry time after a failure
 };
 
@@ -26,8 +27,8 @@ static int seriesCount = 0;
 static volatile uint32_t version = 0;
 static TaskHandle_t taskHandle = nullptr;
 
-// Fetches the closes of the last HISTORY_POINTS 15-minute candles
-static bool fetchKlines(const char *name, float *out, int *count)
+// Fetches the last HISTORY_POINTS 15-minute candles
+static bool fetchKlines(const char *name, Candle *out, int *count)
 {
     char url[128];
     char symbol[TICKER_LEN + 4];
@@ -68,7 +69,11 @@ static bool fetchKlines(const char *name, float *out, int *count)
     {
         if (n >= HISTORY_POINTS)
             break;
-        out[n++] = strtof(kline[4] | "0", nullptr);
+        Candle &c = out[n++];
+        c.open = strtof(kline[1] | "0", nullptr);
+        c.high = strtof(kline[2] | "0", nullptr);
+        c.low = strtof(kline[3] | "0", nullptr);
+        c.close = strtof(kline[4] | "0", nullptr);
     }
     *count = n;
     Serial.printf("[HIST] %s: %d points\n", symbol, n);
@@ -82,6 +87,8 @@ static void historyTask(void *)
         vTaskDelay(pdMS_TO_TICKS(2000));
         if (WiFi.status() != WL_CONNECTED)
             continue;
+
+        marketIndexPoll(); // same background task: HTTPS requests never block the UI
 
         // Pick one pair that still needs loading
         char name[TICKER_LEN] = {0};
@@ -98,9 +105,9 @@ static void historyTask(void *)
         if (!name[0])
             continue;
 
-        static float points[HISTORY_POINTS];
+        static Candle candles[HISTORY_POINTS];
         int count = 0;
-        bool ok = fetchKlines(name, points, &count);
+        bool ok = fetchKlines(name, candles, &count);
 
         portENTER_CRITICAL(&historyMux);
         for (int i = 0; i < seriesCount; i++)
@@ -109,7 +116,7 @@ static void historyTask(void *)
                 continue;
             if (ok)
             {
-                memcpy(series[i].points, points, sizeof(float) * count);
+                memcpy(series[i].candles, candles, sizeof(Candle) * count);
                 series[i].count = count;
                 series[i].bucketStart = millis();
                 version++;
@@ -161,31 +168,37 @@ void historyOnPrice(const char *name, double price)
         if (strcmp(s.name, name) != 0 || s.count == 0)
             continue;
 
-        // Start new 15-minute buckets as time passes (also after gaps)
+        // Start new 15-minute candles as time passes (also after gaps)
+        float p = price;
         while (millis() - s.bucketStart >= HISTORY_BUCKET_MS)
         {
             if (s.count == HISTORY_POINTS)
-                memmove(s.points, s.points + 1, sizeof(float) * (HISTORY_POINTS - 1));
+                memmove(s.candles, s.candles + 1, sizeof(Candle) * (HISTORY_POINTS - 1));
             else
                 s.count++;
-            s.points[s.count - 1] = price;
+            s.candles[s.count - 1] = {p, p, p, p};
             s.bucketStart += HISTORY_BUCKET_MS;
         }
-        s.points[s.count - 1] = price; // current bucket follows the live price
+
+        // The current candle follows the live price
+        Candle &c = s.candles[s.count - 1];
+        c.close = p;
+        c.high = max(c.high, p);
+        c.low = min(c.low, p);
         version++;
         break;
     }
     portEXIT_CRITICAL(&historyMux);
 }
 
-int historyGet(int idx, float *out)
+int historyGet(int idx, Candle *out)
 {
     int count = 0;
     portENTER_CRITICAL(&historyMux);
     if (idx >= 0 && idx < seriesCount)
     {
         count = series[idx].count;
-        memcpy(out, series[idx].points, sizeof(float) * count);
+        memcpy(out, series[idx].candles, sizeof(Candle) * count);
     }
     portEXIT_CRITICAL(&historyMux);
     return count;

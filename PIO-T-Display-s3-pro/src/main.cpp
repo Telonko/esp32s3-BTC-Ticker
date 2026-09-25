@@ -19,6 +19,7 @@
 #include "ChartView.h"
 #include "IconStore.h"
 #include "OtaGuard.h"
+#include "MarketIndex.h"
 
 // Define display and touch hardware specifics
 LilyGo_Class amoled;
@@ -35,8 +36,13 @@ const int low_battery_percent = 10;
 
 static int lastBatteryPercent = 100;
 
-// 24 h change in %, top row between the battery and the pair name
+// Top row between the battery and the pair name: the 24 h change in %, the
+// 24 h volume and the Fear & Greed index take turns every TOP_ROW_SWITCH_MS
 static lv_obj_t *changeLabel = nullptr;
+static char changeText[12] = "";
+static uint32_t changeColor = 0;
+static bool topStatusActive = false; // firmware update progress wins
+#define TOP_ROW_SWITCH_MS 5000
 #define COLOR_UP 0x3FCF6E
 #define COLOR_DOWN 0xE5484D
 
@@ -47,6 +53,7 @@ void updateBrightness();
 void pixelShiftStep();
 static void updateChangeVisibility();
 static void updateWifiPowerSave();
+static void renderTopRow();
 
 static const char *resetReasonName(uint8_t reason)
 {
@@ -188,6 +195,7 @@ void loop()
 
         updateBrightness();
         updateChangeVisibility();
+        renderTopRow();
         updateWifiPowerSave();
         otaGuardLoop();
 
@@ -230,15 +238,89 @@ static void createChangeLabel()
     // Font25 is monospaced, 15 px per char: "+2.35%" = 90 px. The no-Wi-Fi /
     // no-connection icons use the same spot (x ~300-370), see updateChangeVisibility()
     changeLabel = lv_label_create(ui_ticker);
-    lv_obj_set_pos(changeLabel, 226, 10);
+    lv_obj_set_pos(changeLabel, 214, 10);
+    // Battery a bit left too: "<charge> 100%" is ~60 px wide around its center
+    lv_obj_set_x(ui_Label_Battary, -86);
     lv_obj_set_style_text_font(changeLabel, &ui_font_Font25, 0);
     lv_label_set_text(changeLabel, "");
 }
 
-// Status text (firmware update) in place of the 24 h change; the next price
-// update restores the change
+static uint32_t fearGreedColor(int value)
+{
+    if (value < 25)
+        return 0xE5484D; // extreme fear
+    if (value < 45)
+        return 0xF5923E; // fear
+    if (value <= 55)
+        return 0xFFCA41; // neutral
+    if (value <= 75)
+        return 0xA3E05B; // greed
+    return 0x3FCF6E;     // extreme greed
+}
+
+// Redraws the top row only when its content changes
+static void renderTopRow()
+{
+    if (topStatusActive)
+        return;
+
+    // Only items with data take part in the rotation
+    char items[3][12];
+    uint32_t colors[3];
+    int count = 0;
+
+    if (changeText[0])
+    {
+        strlcpy(items[count], changeText, sizeof(items[0]));
+        colors[count++] = changeColor;
+    }
+
+    double volume;
+    if (wsGetVolume(currentTicker, &volume))
+    {
+        // Font25 is 15 px per char: "Vol 1.23B" = 135 px
+        const char *suffix = "";
+        if (volume >= 1e9)
+            volume /= 1e9, suffix = "B";
+        else if (volume >= 1e6)
+            volume /= 1e6, suffix = "M";
+        else if (volume >= 1e3)
+            volume /= 1e3, suffix = "K";
+        snprintf(items[count], sizeof(items[0]), volume >= 100 ? "Vol %.0f%s" : "Vol %.2f%s", volume, suffix);
+        colors[count++] = 0xFFCA41;
+    }
+
+    int index = marketIndexValue();
+    if (index >= 0)
+    {
+        snprintf(items[count], sizeof(items[0]), "F&G %d", index);
+        colors[count++] = fearGreedColor(index);
+    }
+
+    char text[12] = "";
+    uint32_t color = 0;
+    if (count > 0)
+    {
+        int slot = (millis() / TOP_ROW_SWITCH_MS) % count;
+        strlcpy(text, items[slot], sizeof(text));
+        color = colors[slot];
+    }
+
+    static char shownText[12] = "-";
+    static uint32_t shownColor = 1;
+    if (strcmp(text, shownText) == 0 && color == shownColor)
+        return;
+    strlcpy(shownText, text, sizeof(shownText));
+    shownColor = color;
+    lv_obj_set_style_text_color(changeLabel, lv_color_hex(color), 0);
+    lv_label_set_text(changeLabel, text);
+}
+
+// Status text (firmware update) in place of the top row until the next
+// price update
 void topStatusShow(const char *text)
 {
+    topStatusActive = true;
     lv_obj_set_style_text_color(changeLabel, lv_color_hex(0xFFCA41), 0);
     lv_label_set_text(changeLabel, text);
     lv_obj_clear_flag(changeLabel, LV_OBJ_FLAG_HIDDEN);
@@ -264,7 +346,9 @@ void updatePriceUI(double btcRate, double highRate, double lowRate, double openR
         lv_label_set_text(ui_Label_Price_Rate, "--");
         lv_label_set_text(ui_LabelPricehigh, "--");
         lv_label_set_text(ui_labelPriceLow, "--");
-        lv_label_set_text(changeLabel, "");
+        changeText[0] = 0;
+        topStatusActive = false;
+        renderTopRow();
         return;
     }
 
@@ -272,13 +356,15 @@ void updatePriceUI(double btcRate, double highRate, double lowRate, double openR
     if (openRate > 0)
     {
         double change = (btcRate - openRate) / openRate * 100;
-        lv_obj_set_style_text_color(changeLabel, lv_color_hex(change >= 0 ? COLOR_UP : COLOR_DOWN), 0);
-        lv_label_set_text_fmt(changeLabel, fabs(change) >= 10 ? "%+.1f%%" : "%+.2f%%", change);
+        changeColor = change >= 0 ? COLOR_UP : COLOR_DOWN;
+        snprintf(changeText, sizeof(changeText), fabs(change) >= 10 ? "%+.1f%%" : "%+.2f%%", change);
     }
     else
     {
-        lv_label_set_text(changeLabel, "");
+        changeText[0] = 0;
     }
+    topStatusActive = false;
+    renderTopRow();
 
     // Cheap coins (DOGE, SHIB...) need more decimals
     const char *format = btcRate >= 1 ? "%.2f" : btcRate >= 0.01 ? "%.4f" : "%.8f";
