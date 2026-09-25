@@ -3,6 +3,7 @@
 #include <LV_Helper.h>
 #include <LilyGo_AMOLED.h>
 #include <ui.h>
+#include <Pangodream_18650_CL.h>
 
 #include "TimeHelper.h"
 #include "WiFiProvHelper.h"
@@ -11,14 +12,22 @@
 #include "pin_config.h"
 #include "handleButtons.h"
 
+#if __has_include("secrets.h")
+    #include "secrets.h"
+#endif
+
+#define CONV_FACTOR 1.8
+#define READS 20
+
+Pangodream_18650_CL BL(PIN_BAT_VOLT, CONV_FACTOR, READS);
 // Define display and touch hardware specifics
 LilyGo_Class amoled;
 
 // Example Wi-Fi provisioning QR code data (to be generated dynamically)
 const char *pop = "12345678";               // Proof of possession
 const char *service_name = "crypto_ticker"; // Name of your device
+const uint8_t home_brighest = 50;
 
-void updatePriceUI(float btcRate, float highRate, float lowRate);
 void SysProvEvent(arduino_event_t *sys_event);
 void toggleScreenRotation();
 
@@ -48,21 +57,13 @@ void setup()
     // Show the QR code in the container after initializing the screen
     showQRCodeInContainer(service_name, pop);
 
-    // Show the loading screen
+    // Show the loading screen; it stays up while Wi-Fi is connecting
     lv_scr_load(ui_loading);
-
-    // Non-blocking delay to show the loading screen for 5 seconds
-    unsigned long loadingStart = millis();
-    while (millis() - loadingStart < 5000)
-    {
-        lv_task_handler(); // Handle LVGL tasks to update the screen
-        delay(5);          // Short delay to prevent overwhelming the CPU
-    }
+    lv_task_handler();
 
     // Check if Wi-Fi is already provisioned
     if (isProvisioned())
     {
-        lv_obj_del(ui_wifiProv); // Clean up the provisioning UI if it was created
         Serial.println("[DEBUG] Wi-Fi is already provisioned.");
 
         // Connect to Wi-Fi with saved credentials
@@ -75,19 +76,16 @@ void setup()
             while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000)
             {
                 lv_task_handler(); // Handle LVGL tasks to update the screen
-                delay(100);        // Wait 100ms between checks
+                delay(20);
             }
         }
 
         if (WiFi.status() == WL_CONNECTED)
         {
             Serial.println("[DEBUG] Connected to Wi-Fi. Starting background tasks.");
-            initiateNTPTimeSync(); // Start NTP sync
-
-            // Initialize Binance WebSocket to get real-time Bitcoin data
-            initBinanceWebSocket();
-
-            lv_scr_load(ui_ticker); // Load the main screen (ui_crypto)
+            onWiFiConnected();
+            lv_obj_del(ui_wifiProv); // Provisioning UI is not needed anymore
+            ui_wifiProv = NULL;
         }
         else
         {
@@ -113,15 +111,36 @@ void loop()
     lv_task_handler();
     delay(5);
 
-    // Update time and date regularly from NTP (e.g., every second)
+    processProvEvents();
+
+    // Update time, battery and Wi-Fi icon once per second; labels are redrawn only on change
     static unsigned long lastTimeUpdate = 0;
     if (millis() - lastTimeUpdate > 1000)
     {
         updateTimeAndDate();
         lastTimeUpdate = millis();
+
+        static int shownBattery = -1;
+        int battery = BL.getBatteryChargeLevel();
+        if (battery != shownBattery)
+        {
+            shownBattery = battery;
+            lv_label_set_text_fmt(ui_Label_Battary, "%d%%", battery);
+        }
+
+        static int8_t shownWifi = -1;
+        int8_t wifi = WiFi.status() == WL_CONNECTED ? 1 : 0;
+        if (wifi != shownWifi)
+        {
+            shownWifi = wifi;
+            if (wifi)
+                lv_obj_add_flag(ui_no_wifi, LV_OBJ_FLAG_HIDDEN);
+            else
+                lv_obj_clear_flag(ui_no_wifi, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
-    // Handle WebSocket communication
+    // Push fresh prices / connection state from the network task to the UI
     handleBinanceWebSocket();
 
     handleButton1();
@@ -129,7 +148,7 @@ void loop()
 }
 
 // Function to update Bitcoin-related UI elements
-void updatePriceUI(float btcRate, float highRate, float lowRate)
+void updatePriceUI(double btcRate, double highRate, double lowRate)
 {
     // Update Bitcoin Rate with two decimal places (e.g., 12345.67)
     lv_label_set_text_fmt(ui_Label_Price_Rate, "%.2f", btcRate);
@@ -139,24 +158,24 @@ void updatePriceUI(float btcRate, float highRate, float lowRate)
     lv_label_set_text_fmt(ui_labelPriceLow, "%.2f", lowRate);
 }
 
-// Updates time and date labels on the display
-void updateTimeAndDate()
+// Called once Wi-Fi is up (at boot or after provisioning / reconnect)
+void onWiFiConnected()
 {
-    // Get the current time from the synchronized NTP time
-    time_t now = time(nullptr);
-    struct tm *timeInfo = localtime(&now);
+    static bool started = false;
+    if (started)
+        return; // Wi-Fi reconnects are handled by the network task
 
-    // Format the time as 12-hour with AM/PM
-    char timeStr[10];
-    strftime(timeStr, sizeof(timeStr), "%H:%M", timeInfo);
-
-    // Format the date as "04-09-24" (date-month-year with last 2 digits of the year)
-    char dateStr[12];
-    strftime(dateStr, sizeof(dateStr), "%d-%m-%y", timeInfo);
-
-    // Update UI labels (assuming these labels are defined in the `ui.h`)
-    lv_label_set_text(ui_Label_time, timeStr); // Update time label on eth screen
-    lv_label_set_text(ui_Label_date, dateStr); // Update date label on eth screen
+    started = true;
+#ifdef WIFI_SSID
+    if (WiFi.SSID() == WIFI_SSID)
+    {
+        amoled.setBrightness(home_brighest);
+    }
+#endif
+    initiateNTPTimeSync();  // Non-blocking
+    initBinanceWebSocket(); // Starts the network task
+    setTickerInfo();
+    lv_scr_load(ui_ticker);
 }
 
 void toggleScreenRotation()

@@ -14,41 +14,28 @@ extern "C" {
     #include "esp_wifi.h"
 }
 
-// Declare global variables if needed
-extern float btcRate;
-extern float highRate;
-extern float lowRate;
-
 extern const char *pop;
 extern const char *service_name;
+
+// Set from the Wi-Fi event task, consumed in loop(): LVGL must not be touched
+// from the event task, and blocking there stalls the whole Wi-Fi stack.
+static volatile bool pendingProvStart = false;
+static volatile bool pendingGotIp = false;
 
 void SysProvEvent(arduino_event_t *sys_event) {
     switch (sys_event->event_id) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            lv_obj_add_flag(ui_no_wifi, LV_OBJ_FLAG_HIDDEN);
-            Serial.printf("[DEBUG] Wi-Fi connected successfully. IP: %s\n", WiFi.localIP());
-            updateConnectionStatus("Successfully Connected to Wi-Fi!", "Provisioning Complete", "Success", "softap");
-
-            // Start background tasks (e.g., NTP sync) after a short delay
-            delay(5000);
-            initiateNTPTimeSync();  // Start NTP sync
-
-            // Initialize Binance WebSocket for real-time Bitcoin data
-            initBinanceWebSocket();
-
-            // Load the main screen (ui_crypto)
-            lv_scr_load(ui_ticker);
+            Serial.printf("[DEBUG] Wi-Fi connected successfully. IP: %s\n", WiFi.localIP().toString().c_str());
+            pendingGotIp = true;
             break;
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-            lv_obj_clear_flag(ui_no_wifi, LV_OBJ_FLAG_HIDDEN);
             Serial.println("[DEBUG] Disconnected from Wi-Fi.");
             break;
 
         case ARDUINO_EVENT_PROV_START:
             Serial.println("[DEBUG] Provisioning started. Please provide Wi-Fi credentials.");
-            lv_scr_load(ui_wifiProv);  // Load ui_wifiProv.c for Wi-Fi provisioning
-            updateConnectionStatus("Use ESP SoftAP Prov App to provision", service_name, pop, "softap");
+            pendingProvStart = true;
             break;
 
         case ARDUINO_EVENT_PROV_END:
@@ -56,8 +43,19 @@ void SysProvEvent(arduino_event_t *sys_event) {
             break;
 
         default:
-            Serial.println("[DEBUG] Unhandled provisioning event.");
             break;
+    }
+}
+
+void processProvEvents() {
+    if (pendingProvStart) {
+        pendingProvStart = false;
+        lv_scr_load(ui_wifiProv);
+        updateConnectionStatus("Use ESP SoftAP Prov App to provision", service_name, pop, "softap");
+    }
+    if (pendingGotIp) {
+        pendingGotIp = false;
+        onWiFiConnected();
     }
 }
 

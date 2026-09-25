@@ -10,17 +10,7 @@
 extern "C" {
 #endif
 
-#if defined __has_include
-  #if __has_include("lvgl.h")
     #include "lvgl.h"
-  #elif __has_include("lvgl/lvgl.h")
-    #include "lvgl/lvgl.h"
-  #else
-    #include "lvgl.h"
-  #endif
-#else
-  #include "lvgl.h"
-#endif
 
 #include "ui_helpers.h"
 #include "components/ui_comp.h"
@@ -45,7 +35,6 @@ extern lv_obj_t *ui_Image_mask;
 void ui_ticker_screen_init(void);
 extern lv_obj_t *ui_ticker;
 extern lv_obj_t *ui_ImageBG;
-extern lv_obj_t *ui_Label_date;
 extern lv_obj_t *ui_Label_time;
 extern lv_obj_t *ui_Label_Price_Rate;
 extern lv_obj_t *ui_LabelPricehigh;
@@ -55,6 +44,7 @@ extern lv_obj_t *ui_img_symbol;
 extern lv_obj_t *ui_img_symbol_btc;
 extern lv_obj_t *ui_no_wifi;
 extern lv_obj_t *ui_no_websocket;
+extern lv_obj_t *ui_Label_Battary;
 extern lv_obj_t *ui____initial_actions0;
 
 LV_IMG_DECLARE( ui_img_images_logo_png);   // assets/Images/Logo.png

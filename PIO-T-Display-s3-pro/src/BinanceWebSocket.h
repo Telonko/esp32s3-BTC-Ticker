@@ -6,18 +6,22 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 
-extern char *screenTickers[2];
-extern char *currentTicker;
+#define TICKERS_COUNT 3
+
+extern const char *screenTickers[TICKERS_COUNT];
+extern const char *currentTicker;
 
 // Externally defined function to update the UI
-void updatePriceUI(float btcRate, float highRate, float lowRate);
+void updatePriceUI(double lastRate, double highRate, double lowRate);
 
-// Function to initialize and connect the WebSocket client
+// Starts the network task (once). The WebSocket lives entirely in that task,
+// so TLS handshakes and reconnects never block the LVGL loop.
 void initBinanceWebSocket();
 
-// Function to handle the WebSocket loop
+// Called from loop(): pushes fresh prices / connection state to LVGL.
 void handleBinanceWebSocket();
 
+// Refreshes ticker name, icon and cached price for currentTicker (UI thread only).
 void setTickerInfo();
 
 #endif // BINANCEWEBSOCKET_H

@@ -5,32 +5,49 @@
 #include <lvgl.h>
 #include "ui.h"
 
-// Variable to track if NTP synchronization has been initiated
-static bool ntpSyncInProgress = false;
+// Any time before this means SNTP has not synced yet
+#define MIN_VALID_EPOCH 1700000000
 
-// Syncs time with the NTP server in a non-blocking way
+static bool ntpSyncStarted = false;
+
+// Starts SNTP in the background and returns immediately.
+// The SNTP client keeps retrying and re-syncing on its own.
 void initiateNTPTimeSync() {
-    if (!ntpSyncInProgress) {
-        configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-        ntpSyncInProgress = true;
-        Serial.println("Started NTP time sync...");
-
-        time_t now = time(nullptr);
-        while (now < 8 * 3600 * 2) {
-            delay(500);
-            now = time(nullptr);
-        }
-
-        // Print the raw UTC time to ensure synchronization
-        Serial.print("Raw UTC Time: ");
-        Serial.println(asctime(gmtime(&now)));
-
-        // Apply time zone offset if necessary
-        setenv("TZ", TIME_ZONE, 1);
-        tzset();
-        struct tm *timeInfo = localtime(&now);
-        Serial.print("Local Time: ");
-        Serial.println(asctime(timeInfo));
-        
+    if (ntpSyncStarted) {
+        return;
     }
+    ntpSyncStarted = true;
+    configTzTime(TIME_ZONE, "pool.ntp.org", "time.nist.gov");
+    Serial.println("Started NTP time sync...");
+}
+
+bool isTimeSynchronized() {
+    return time(nullptr) > MIN_VALID_EPOCH;
+}
+
+// Updates the time label, redrawing it only when the minute changes
+void updateTimeAndDate() {
+    static int shownMinute = -2; // -1 means "--:--" is shown
+
+    if (!isTimeSynchronized()) {
+        if (shownMinute != -1) {
+            lv_label_set_text(ui_Label_time, "--:--");
+            shownMinute = -1;
+        }
+        return;
+    }
+
+    time_t now = time(nullptr);
+    struct tm timeInfo;
+    localtime_r(&now, &timeInfo);
+
+    int minute = timeInfo.tm_hour * 60 + timeInfo.tm_min;
+    if (minute == shownMinute) {
+        return;
+    }
+    shownMinute = minute;
+
+    char timeStr[6];
+    strftime(timeStr, sizeof(timeStr), "%H:%M", &timeInfo);
+    lv_label_set_text(ui_Label_time, timeStr);
 }

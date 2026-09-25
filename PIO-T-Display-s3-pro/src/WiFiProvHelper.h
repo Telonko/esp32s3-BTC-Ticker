@@ -12,7 +12,10 @@ void resetProvisioning();  // Resets Wi-Fi provisioning by erasing stored creden
 
 bool connectToNetwork(const char *ssid, const char *pwd);
 
-void initiateNTPTimeSync();
-void updatePriceUI(float btcRate, float highRate, float lowRate);
+// Applies provisioning events to the UI; call from loop() (LVGL thread)
+void processProvEvents();
+
+// Defined in main.cpp: switches to the ticker screen and starts network services
+void onWiFiConnected();
 
 #endif // WIFI_PROV_HELPER_H

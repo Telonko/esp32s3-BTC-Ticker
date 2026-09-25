@@ -61,7 +61,7 @@ void handleButton2()
                 {
                     currentTicker = screenTickers[0];
                 }
-                initBinanceWebSocket(); // switch between tickers
+                setTickerInfo(); // switch between tickers (all streams are already subscribed)
             }
         }
         else if (button2_PressedCounter == 1 && millis() - button2_PressedTime >= rotateTime)
