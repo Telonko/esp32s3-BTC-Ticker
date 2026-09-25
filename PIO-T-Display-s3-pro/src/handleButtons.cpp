@@ -6,7 +6,7 @@
 #include "ChartView.h"
 #include "handleButtons.h"
 
-#define resetTime 5000  // hold button 1 to reset Wi-Fi credentials
+#define setupTime 5000  // hold button 1: setup access point + page password reset
 #define rotateTime 4500 // hold button 2 to rotate the screen
 #define debounceTime 30 // shorter presses are contact bounce
 #define doubleClickTime 400 // second click within this time = double click
@@ -17,18 +17,22 @@ unsigned long button2_PressedTime = 0;
 bool button1_hold = false;
 bool button2_hold = false;
 bool button2_longDone = false;
+bool button1_longDone = false;
 unsigned long button1_ReleasedTime = 0;
 bool button1_clickPending = false;
 
 // Button 1 (GPIO0): click toggles high/low <-> chart (or dismisses an alert),
-// double click shows the IP address, hold 5 s resets Wi-Fi credentials
+// double click shows the IP address, hold 5 s starts the setup access point
+// and resets the page password; click on the setup screen closes it
 void handleButton1()
 {
     // A single click waits to see whether a second one follows
     if (button1_clickPending && millis() - button1_ReleasedTime >= doubleClickTime)
     {
         button1_clickPending = false;
-        if (alertActive())
+        if (wifiShowSetupScreen())
+            wifiCloseSetup();
+        else if (alertActive())
             alertDismiss();
         else
             chartViewToggle();
@@ -39,17 +43,19 @@ void handleButton1()
         if (!button1_hold)
         {
             button1_hold = true;
+            button1_longDone = false;
             button1_PressedTime = millis();
         }
-        else if (millis() - button1_PressedTime >= resetTime)
+        else if (!button1_longDone && millis() - button1_PressedTime >= setupTime)
         {
-            resetProvisioning(); // Reset Wi-Fi credentials if button held for 5 seconds
+            button1_longDone = true;
+            wifiSetupMode();
         }
     }
     else if (button1_hold)
     {
         button1_hold = false;
-        if (millis() - button1_PressedTime >= debounceTime)
+        if (!button1_longDone && millis() - button1_PressedTime >= debounceTime)
         {
             if (button1_clickPending)
             {

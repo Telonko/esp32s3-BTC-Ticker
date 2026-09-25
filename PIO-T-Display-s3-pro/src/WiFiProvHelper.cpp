@@ -1,9 +1,8 @@
 #include "WiFiProvHelper.h"
-#include <WiFiProv.h>
 #include <WiFi.h>
+#include <DNSServer.h>
 
-#include "ui.h"
-#include "WiFiProvScreen.h"
+#include "ApScreen.h"
 #include "Settings.h"
 #include "WebConfig.h"
 
@@ -11,14 +10,19 @@ extern "C" {
     #include "esp_wifi.h"
 }
 
-extern const char *pop;
-extern const char *service_name;
-
 #define MAX_KNOWN_NETWORKS (MAX_WIFI_NETWORKS + 1)
 #define MAX_SCAN_RESULTS 10
+// At 80 MHz joining a weak (-90 dBm) network kept failing, at 240 MHz it
+// worked at once: connect at full speed, then save power
+#define CPU_MHZ_CONNECTING 240
+#define CPU_MHZ_CONNECTED 80
 #define CONNECT_TIMEOUT_MS 15000
 #define RETRY_DELAY_MS 30000
 #define LOST_RESCAN_DELAY_MS 3000
+// Own access point when no network could be joined for this long
+#define AP_AFTER_MS (2 * 60 * 1000UL)
+// Started by hand (button 1): stays up this long even when online
+#define AP_MANUAL_KEEP_MS (5 * 60 * 1000UL)
 
 struct KnownNetwork {
     char ssid[33];
@@ -27,60 +31,32 @@ struct KnownNetwork {
 
 enum WifiState { W_IDLE, W_SCANNING, W_CONNECTING, W_CONNECTED, W_WAITING };
 
-// Network stored by provisioning, read once at init: after WiFi.begin()
-// esp_wifi_get_config() returns the current (RAM) config instead.
+// Network stored in the Wi-Fi driver config by the old provisioning, read
+// once at init: after WiFi.begin() esp_wifi_get_config() returns the
+// current (RAM) config instead.
 static KnownNetwork storedNetwork = {{0}, {0}};
 
 // SSIDs seen by the last scan, for the web page
 static char lastScan[MAX_SCAN_RESULTS][33];
 static int lastScanCount = 0;
 
+// Next known network to try without seeing it in the scan (hidden SSID,
+// missed beacon); reset after a full round or a successful connection
+static int blindNext = 0;
+
 static WifiState state = W_IDLE;
 static unsigned long stateSince = 0;
 static unsigned long waitMs = 0;
 static bool firstAttemptPending = true;
+static unsigned long offlineSince = 0;
 
-// Set from the Wi-Fi event task, consumed in loop(): LVGL must not be touched
-// from the event task, and blocking there stalls the whole Wi-Fi stack.
-static volatile bool pendingProvStart = false;
-static volatile bool pendingGotIp = false;
-
-void SysProvEvent(arduino_event_t *sys_event) {
-    switch (sys_event->event_id) {
-        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            Serial.printf("[DEBUG] Wi-Fi connected successfully. IP: %s\n", WiFi.localIP().toString().c_str());
-            pendingGotIp = true;
-            break;
-
-        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-            Serial.println("[DEBUG] Disconnected from Wi-Fi.");
-            break;
-
-        case ARDUINO_EVENT_PROV_START:
-            Serial.println("[DEBUG] Provisioning started. Please provide Wi-Fi credentials.");
-            pendingProvStart = true;
-            break;
-
-        case ARDUINO_EVENT_PROV_END:
-            Serial.println("[DEBUG] Provisioning process completed.");
-            break;
-
-        default:
-            break;
-    }
-}
-
-void processProvEvents() {
-    if (pendingProvStart) {
-        pendingProvStart = false;
-        lv_scr_load(ui_wifiProv);
-        updateConnectionStatus("Use ESP SoftAP Prov App to provision", service_name, pop, "softap");
-    }
-    if (pendingGotIp) {
-        pendingGotIp = false;
-        onWiFiConnected();
-    }
-}
+// Setup access point
+static DNSServer dnsServer;
+static bool apActive = false;
+static bool retryRequested = false; // scan even while a phone is on the AP
+static unsigned long apKeepUntil = 0; // manual start: keep the AP until then
+static char apSsid[20];
+static char apPass[12];
 
 static void addKnown(KnownNetwork *list, int &count, const char *ssid, const char *pass) {
     if (!ssid || !ssid[0] || count >= MAX_KNOWN_NETWORKS)
@@ -94,7 +70,7 @@ static void addKnown(KnownNetwork *list, int &count, const char *ssid, const cha
     count++;
 }
 
-// Networks from the web page plus the one stored by provisioning
+// Networks from the web page plus the one stored in the driver config
 static int loadKnownNetworks(KnownNetwork *list) {
     int count = 0;
     for (int i = 0; i < wifiList.count; i++)
@@ -111,9 +87,12 @@ static void setState(WifiState next, unsigned long wait = 0) {
 }
 
 static void startScan() {
+    retryRequested = false;
+    if (getCpuFrequencyMhz() != CPU_MHZ_CONNECTING)
+        setCpuFrequencyMhz(CPU_MHZ_CONNECTING);
     Serial.println("[WIFI] Scanning...");
     WiFi.scanDelete();
-    WiFi.scanNetworks(true /* async */);
+    WiFi.scanNetworks(true /* async */, true /* show hidden */);
     setState(W_SCANNING);
 }
 
@@ -122,12 +101,62 @@ static void attemptFailed(unsigned long retryMs) {
     setState(W_WAITING, retryMs);
 }
 
+void wifiStartAp() {
+    if (apActive)
+        return;
+
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    snprintf(apSsid, sizeof(apSsid), "ticker-%02X%02X", mac[4], mac[5]);
+    // New random password on every start: only someone who sees the screen
+    // can join
+    snprintf(apPass, sizeof(apPass), "%08x", esp_random());
+
+    unsigned long t0 = millis();
+    WiFi.mode(WIFI_AP_STA);
+    unsigned long tMode = millis();
+    WiFi.softAP(apSsid, apPass);
+    WiFi.setTxPower(WIFI_TX_POWER);
+    unsigned long tAp = millis();
+    // Captive portal: every DNS name points to us, phones open the page
+    dnsServer.start(53, "*", WiFi.softAPIP());
+    apActive = true;
+
+    String ip = WiFi.softAPIP().toString();
+    apScreenShow(apSsid, apPass, ip.c_str());
+    unsigned long tQr = millis();
+    webConfigBegin();
+    Serial.printf("[WIFI] Setup access point %s started, http://%s (mode %lu ms, AP %lu ms, QR %lu ms, web %lu ms)\n",
+                  apSsid, ip.c_str(), tMode - t0, tAp - tMode, tQr - tAp, millis() - tQr);
+}
+
+static void stopAp() {
+    dnsServer.stop();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    apActive = false;
+    Serial.println("[WIFI] Setup access point stopped");
+}
+
+bool wifiApActive() {
+    return apActive;
+}
+
+bool wifiShowSetupScreen() {
+    return apActive && (WiFi.status() != WL_CONNECTED || (long)(millis() - apKeepUntil) < 0);
+}
+
+void wifiCloseSetup() {
+    apKeepUntil = millis(); // closes once no phone is connected
+}
+
 bool wifiInit() {
-    // Connecting to networks from the web page must not overwrite the network
-    // stored by provisioning; only the provisioning manager writes to flash.
+    // Connecting to networks from the web page must not overwrite the
+    // network stored in the driver config
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(false); // wifiLoop() reconnects (and can switch networks)
+    offlineSince = millis();
 
     wifi_config_t conf;
     if (esp_wifi_get_config(WIFI_IF_STA, &conf) == ESP_OK) {
@@ -141,10 +170,12 @@ bool wifiInit() {
     for (int i = 0; i < count; i++)
         Serial.printf("[WIFI]   %s\n", known[i].ssid);
 
-    if (count > 0)
+    if (count > 0) {
         startScan();
-    else
+    } else {
         firstAttemptPending = false;
+        wifiStartAp();
+    }
     return count > 0;
 }
 
@@ -160,7 +191,8 @@ int wifiScanResults(const char *out[], int max) {
 }
 
 void wifiRetryNow() {
-    if (state == W_WAITING)
+    retryRequested = true;
+    if (state == W_WAITING || state == W_IDLE)
         startScan();
 }
 
@@ -169,6 +201,17 @@ bool wifiFirstAttemptPending() {
 }
 
 void wifiLoop() {
+    if (apActive) {
+        dnsServer.processNextRequest();
+
+        // Online again and nobody is using the setup network: close it
+        if (state == W_CONNECTED && WiFi.softAPgetStationNum() == 0 && (long)(millis() - apKeepUntil) >= 0)
+            stopAp();
+    } else if (state != W_CONNECTED && millis() - offlineSince > AP_AFTER_MS) {
+        Serial.printf("[WIFI] Offline for %lu s\n", AP_AFTER_MS / 1000);
+        wifiStartAp();
+    }
+
     switch (state) {
     case W_IDLE:
         break;
@@ -195,6 +238,10 @@ void wifiLoop() {
                 strlcpy(lastScan[lastScanCount++], ssid.c_str(), sizeof(lastScan[0]));
         }
 
+        for (int i = 0; i < found; i++) {
+            Serial.printf("[WIFI]   seen \"%s\" %d dBm ch %d\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i));
+        }
+
         int best = -1;
         int bestRssi = -1000;
         for (int i = 0; i < found; i++) {
@@ -208,12 +255,21 @@ void wifiLoop() {
         WiFi.scanDelete();
 
         if (best < 0) {
-            Serial.printf("[WIFI] No known network in range (%d found), retry in %d s\n", found, RETRY_DELAY_MS / 1000);
-            attemptFailed(RETRY_DELAY_MS);
-            break;
+            // Not in the scan: still try each known network directly, like a
+            // plain WiFi.begin() would (hidden SSID or a missed beacon)
+            if (blindNext < count) {
+                best = blindNext++;
+                Serial.printf("[WIFI] %s not seen in scan, trying anyway\n", known[best].ssid);
+            } else {
+                blindNext = 0;
+                Serial.printf("[WIFI] No known network in range (%d found), retry in %d s\n", found, RETRY_DELAY_MS / 1000);
+                attemptFailed(RETRY_DELAY_MS);
+                break;
+            }
+        } else {
+            Serial.printf("[WIFI] Connecting to %s (%d dBm)\n", known[best].ssid, bestRssi);
         }
 
-        Serial.printf("[WIFI] Connecting to %s (%d dBm)\n", known[best].ssid, bestRssi);
         WiFi.begin(known[best].ssid, known[best].pass);
         WiFi.setTxPower(WIFI_TX_POWER);
         setState(W_CONNECTING);
@@ -224,42 +280,42 @@ void wifiLoop() {
         if (WiFi.status() == WL_CONNECTED) {
             Serial.printf("[WIFI] Connected to %s, IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
             firstAttemptPending = false;
+            blindNext = 0;
             setState(W_CONNECTED);
+            setCpuFrequencyMhz(CPU_MHZ_CONNECTED);
             onWiFiConnected();
         } else if (millis() - stateSince > CONNECT_TIMEOUT_MS) {
-            Serial.println("[WIFI] Connection timeout");
+            Serial.printf("[WIFI] Connection timeout (status %d)\n", WiFi.status());
             WiFi.disconnect();
-            attemptFailed(5000);
+            // Try the next network right away while a blind round is running
+            attemptFailed(blindNext ? 500 : 5000);
         }
         break;
 
     case W_CONNECTED:
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("[WIFI] Connection lost");
+            offlineSince = millis();
             setState(W_WAITING, LOST_RESCAN_DELAY_MS);
         }
         break;
 
     case W_WAITING:
-        if (millis() - stateSince >= waitMs)
+        // Joining a network moves the AP to that network's channel and drops
+        // the phone: wait while someone is on the setup page, unless the
+        // page asked to retry (network list saved)
+        if (apActive && WiFi.softAPgetStationNum() > 0 && !retryRequested)
+            break;
+        if (millis() - stateSince >= waitMs || retryRequested)
             startScan();
         break;
     }
 }
 
-void setupProvisioning(const char *pop, const char *service_name, const char *service_key, bool reset_provisioned) {
-    WiFi.onEvent(SysProvEvent);
-
-    // Start Wi-Fi provisioning using SoftAP
-    WiFiProv.beginProvision(
-        WIFI_PROV_SCHEME_SOFTAP, WIFI_PROV_SCHEME_HANDLER_NONE,
-        WIFI_PROV_SECURITY_1, pop, service_name, service_key, nullptr, reset_provisioned
-    );
-}
-
-void resetProvisioning() {
-    Serial.println("Resetting Wi-Fi credentials and web page password...");
+void wifiSetupMode() {
+    unsigned long t0 = millis();
     webConfigResetPassword();
-    esp_wifi_restore();  // Restore Wi-Fi to default factory settings
-    ESP.restart();       // Restart device to begin provisioning again
+    Serial.printf("[WIFI] Setup mode: page password reset (%lu ms), access point on\n", millis() - t0);
+    apKeepUntil = millis() + AP_MANUAL_KEEP_MS;
+    wifiStartAp();
 }

@@ -95,9 +95,11 @@ static void appendWifiSection(String &html)
 
     const char *provisioned = wifiProvisionedSsid();
     if (provisioned[0])
-        html += "<small>Ещё сеть из провижининга (приложение ESP SoftAP Prov): " + htmlEscape(provisioned) + ".</small><br>";
+        html += "<small>Ещё сеть из памяти WiFi платы: " + htmlEscape(provisioned) + ".</small><br>";
     html += F("<small>Третье поле — яркость экрана в этой сети (пусто — 100). "
-              "Плата подключается к самой сильной из известных сетей. "
+              "Плата подключается к самой сильной из известных сетей, скрытые тоже поддерживаются. "
+              "Только 2.4 ГГц. Если 2 минуты не удаётся подключиться, плата поднимает свою сеть "
+              "ticker-XXXX — пароль и QR-код на экране. "
               "Подсказки в поле имени — сети, видимые при последнем сканировании.</small>"
               "<br><button type=\"submit\">Сохранить сети</button></form>");
 }
@@ -204,8 +206,8 @@ static void handleRoot()
     html += F("<h3>Пароль страницы</h3><form method=\"post\" action=\"/password\"><div class=\"row\">"
               "<div><input name=\"p1\" type=\"password\" autocomplete=\"new-password\" placeholder=\"Новый пароль\"></div>"
               "<div><input name=\"p2\" type=\"password\" autocomplete=\"new-password\" placeholder=\"Ещё раз\"></div></div>"
-              "<small>Логин: " WEB_USER ". Не меньше 6 символов. Забыли — удерживайте кнопку 1 пять секунд "
-              "(сбросит и пароль, и память WiFi; список сетей на странице останется).</small>"
+              "<small>Логин: " WEB_USER ". Не меньше 6 символов. Забыли — удерживайте кнопку 1 пять секунд: "
+              "пароль страницы сбросится, а плата поднимет свою сеть для настройки.</small>"
               "<br><button type=\"submit\">Сменить пароль</button></form></body></html>");
 
     server.send(200, "text/html; charset=utf-8", html);
@@ -518,10 +520,20 @@ void webConfigBegin()
     server.addHandler(new IconUploadHandler());
     server.on("/icon/delete", HTTP_POST, handleIconDelete);
     server.onNotFound([]()
-                      { server.send(404, "text/plain", "Not found"); });
+                      {
+        // Captive portal: phones probe some URL on the setup access point
+        // and show the page they get redirected to
+        if (wifiApActive())
+        {
+            server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/");
+            server.send(302, "text/plain", "");
+            return;
+        }
+        server.send(404, "text/plain", "Not found"); });
     server.begin();
 
-    Serial.printf("[WEB] Settings: http://%s.local or http://%s\n", WEB_CONFIG_HOSTNAME, WiFi.localIP().toString().c_str());
+    Serial.printf("[WEB] Settings: http://%s.local, http://%s (setup AP: http://%s)\n", WEB_CONFIG_HOSTNAME,
+                  WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str());
 }
 
 void webConfigLoop()

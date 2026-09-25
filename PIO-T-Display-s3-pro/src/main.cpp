@@ -8,7 +8,7 @@
 
 #include "TimeHelper.h"
 #include "WiFiProvHelper.h"
-#include "WiFiProvScreen.h"
+#include "ApScreen.h"
 #include "BinanceWebSocket.h"
 #include "pin_config.h"
 #include "handleButtons.h"
@@ -22,9 +22,6 @@
 // Define display and touch hardware specifics
 LilyGo_Class amoled;
 
-// Example Wi-Fi provisioning QR code data (to be generated dynamically)
-const char *pop = "12345678";               // Proof of possession
-const char *service_name = "crypto_ticker"; // Name of your device
 const uint8_t default_brightness = 100;
 const uint8_t low_battery_brightness = 20;
 const int low_battery_percent = 10;
@@ -37,9 +34,9 @@ const int low_battery_percent = 10;
 
 static int lastBatteryPercent = 100;
 
-void SysProvEvent(arduino_event_t *sys_event);
 void toggleScreenRotation();
 void startApp();
+void syncScreen();
 void updateBrightness();
 void pixelShiftStep();
 
@@ -89,8 +86,8 @@ static void logResetReason()
 
 void setup()
 {
-    // 80 MHz is the minimum for Wi-Fi and plenty for a ticker; saves power
-    setCpuFrequencyMhz(80);
+    // Full speed while connecting; wifiLoop() drops to 80 MHz once connected
+    setCpuFrequencyMhz(240);
 
     Serial.begin(115200);
     // Without a USB host, writes to USB-CDC would block for the TX timeout
@@ -113,12 +110,7 @@ void setup()
     beginLvglHelper(amoled);
     ui_init();
 
-    // Initialize the Wi-Fi provisioning screen UI
-    ui_wifiProv_screen_init();
-
-    // Show the QR code in the container after initializing the screen
-    showQRCodeInContainer(service_name, pop);
-
+    apScreenInit();
     settingsLoad();
     iconStoreBegin();
 
@@ -126,26 +118,19 @@ void setup()
     lv_scr_load(ui_loading);
     lv_task_handler();
 
+    // Known networks: wait for the first attempt (scan + connect) while
+    // keeping the loading animation alive. Without any, wifiInit() starts the
+    // setup access point. wifiLoop() keeps trying in the background.
     if (wifiInit())
     {
-        // Known networks: wait for the first attempt (scan + connect) while
-        // keeping the loading animation alive, then show the ticker anyway;
-        // wifiLoop() keeps retrying in the background.
         while (wifiFirstAttemptPending())
         {
             wifiLoop();
             lv_task_handler();
             delay(20);
         }
-        startApp();
-        lv_obj_del(ui_wifiProv); // Provisioning UI is not needed anymore
-        ui_wifiProv = NULL;
     }
-    else
-    {
-        Serial.println("[DEBUG] No known Wi-Fi networks. Starting provisioning...");
-        setupProvisioning(pop, service_name, NULL, true);
-    }
+    startApp();
 
     // Set up the reset pin
     pinMode(PIN_BUTTON_1, INPUT_PULLUP);
@@ -165,8 +150,8 @@ void loop()
     lv_task_handler();
     delay(5);
 
-    processProvEvents();
     wifiLoop();
+    syncScreen();
     webConfigLoop();
     alertLoop();
 
@@ -321,7 +306,16 @@ void startApp()
     lv_scr_load(ui_ticker);
 }
 
-// Called on every Wi-Fi connection (boot, reconnect, provisioning)
+// Setup screen while the access point is up and there is no connection,
+// the ticker otherwise
+void syncScreen()
+{
+    lv_obj_t *wanted = wifiShowSetupScreen() ? apScreen() : ui_ticker;
+    if (lv_scr_act() != wanted)
+        lv_scr_load(wanted);
+}
+
+// Called on every Wi-Fi connection (boot or reconnect)
 void onWiFiConnected()
 {
     startApp();
