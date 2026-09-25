@@ -67,7 +67,7 @@ void handleButton2()
         else if (button2_PressedCounter == 1 && millis() - button2_PressedTime >= rotateTime)
         {
             Serial.println("[DEBUG] Toggle screen rotation");
-            toggleScreenRotation(); //todo change me to something else cause of bugged pixels after rotation
+            toggleScreenRotation();
             button2_PressedCounter = 0;
         }
     }

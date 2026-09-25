@@ -245,14 +245,16 @@ void onWiFiConnected()
 
 void toggleScreenRotation()
 {
-    switch (amoled.getRotation())
-    {
-    case 0:
-        amoled.setRotation(2);
-        break;
+    // Rotation only changes the panel scan direction (MADCTL); the panel RAM
+    // still holds the old frame, which then shows up flipped. Hide the panel,
+    // redraw the whole screen right away, then restore brightness.
+    uint8_t brightness = amoled.getBrightness();
+    amoled.setBrightness(0);
 
-    default:
-        amoled.setRotation(0);
-        break;
-    }
+    amoled.setRotation(amoled.getRotation() == 0 ? 2 : 0);
+
+    lv_obj_invalidate(lv_scr_act());
+    lv_refr_now(NULL);
+
+    amoled.setBrightness(brightness);
 }

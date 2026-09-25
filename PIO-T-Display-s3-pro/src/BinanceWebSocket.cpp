@@ -87,11 +87,14 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
             return;
         }
 
-        // Subscription replies ({"result":null,"id":N}) have no symbol
+        // Subscription replies ({"result":null,"id":N}) and errors have no symbol
         JsonObject data = doc.as<JsonObject>();
         int idx = symbolIndex(data["s"] | "");
         if (idx < 0)
+        {
+            Serial.printf("[WS] <- %.*s\n", (int)length, (const char *)payload);
             return;
+        }
 
         Quote q;
         q.last = strtod(data["c"] | "0", nullptr);
@@ -99,9 +102,13 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
         q.low = strtod(data["l"] | "0", nullptr);
 
         portENTER_CRITICAL(&quotesMux);
+        bool first = quotes[idx].last == 0;
         quotes[idx] = q;
         quotesVersion++;
         portEXIT_CRITICAL(&quotesMux);
+
+        if (first)
+            Serial.printf("[WS] First %s price: %.2f (showing %s)\n", screenTickers[idx], q.last, currentTicker);
         break;
     }
     case WStype_DISCONNECTED:
