@@ -3,28 +3,43 @@
 #include "pin_config.h"
 #include "BinanceWebSocket.h"
 #include "Alerts.h"
+#include "ChartView.h"
 #include "handleButtons.h"
 
 #define resetTime 5000  // hold button 1 to reset Wi-Fi credentials
 #define rotateTime 4500 // hold button 2 to rotate the screen
 #define debounceTime 30 // shorter presses are contact bounce
+#define doubleClickTime 400 // second click within this time = double click
+#define ipShowTime 10000
 
 unsigned long button1_PressedTime = 0;
 unsigned long button2_PressedTime = 0;
 bool button1_hold = false;
 bool button2_hold = false;
 bool button2_longDone = false;
+unsigned long button1_ReleasedTime = 0;
+bool button1_clickPending = false;
 
-// Button 1 (GPIO0): press dismisses an alert, hold 5 s resets Wi-Fi credentials
+// Button 1 (GPIO0): click toggles high/low <-> chart (or dismisses an alert),
+// double click shows the IP address, hold 5 s resets Wi-Fi credentials
 void handleButton1()
 {
+    // A single click waits to see whether a second one follows
+    if (button1_clickPending && millis() - button1_ReleasedTime >= doubleClickTime)
+    {
+        button1_clickPending = false;
+        if (alertActive())
+            alertDismiss();
+        else
+            chartViewToggle();
+    }
+
     if (digitalRead(PIN_BUTTON_1) == LOW)
     {
         if (!button1_hold)
         {
             button1_hold = true;
             button1_PressedTime = millis();
-            alertDismiss();
         }
         else if (millis() - button1_PressedTime >= resetTime)
         {
@@ -34,6 +49,19 @@ void handleButton1()
     else if (button1_hold)
     {
         button1_hold = false;
+        if (millis() - button1_PressedTime >= debounceTime)
+        {
+            if (button1_clickPending)
+            {
+                button1_clickPending = false;
+                showIpAddress(ipShowTime);
+            }
+            else
+            {
+                button1_clickPending = true;
+                button1_ReleasedTime = millis();
+            }
+        }
     }
 }
 

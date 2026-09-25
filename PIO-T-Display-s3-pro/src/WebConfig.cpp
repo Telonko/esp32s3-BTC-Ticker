@@ -6,6 +6,9 @@
 #include "Settings.h"
 #include "BinanceWebSocket.h"
 #include "WiFiProvHelper.h"
+#include "IconStore.h"
+#include "CoinNames.h"
+#include <LittleFS.h>
 
 #define WEB_USER "admin"
 #define WEB_REALM "ticker"
@@ -99,6 +102,30 @@ static void appendWifiSection(String &html)
               "<br><button type=\"submit\">Сохранить сети</button></form>");
 }
 
+static void appendIconSection(String &html)
+{
+    html += F("<h3>Иконки пар</h3><table>");
+    for (int i = 0; i < settings.tickerCount; i++)
+    {
+        String name = settings.tickers[i];
+        String upper = name;
+        upper.toUpperCase();
+
+        html += "<tr><td>" + upper + "</td><td class=\"ico\">";
+        if (iconExists(name.c_str()))
+            html += "<img src=\"/icon?name=" + name + "\" width=\"26\" height=\"26\">";
+        else
+            html += "—";
+        html += "</td><td><form method=\"post\" enctype=\"multipart/form-data\" action=\"/icon?name=" + name + "\" class=\"up\">"
+                "<input type=\"file\" name=\"f\" accept=\"image/png\" required><button type=\"submit\">Загрузить</button></form></td><td>";
+        if (iconExists(name.c_str()))
+            html += "<form method=\"post\" action=\"/icon/delete?name=" + name + "\"><button type=\"submit\" class=\"sec\">Удалить</button></form>";
+        html += "</td></tr>";
+    }
+    html += F("</table><small>PNG до 16 КБ и до 64×64 px, лучше 32×32 с прозрачным фоном. "
+              "Своя иконка заменяет встроенную (BTC, ETH).</small>");
+}
+
 static void handleRoot()
 {
     if (!checkAuth())
@@ -117,6 +144,9 @@ static void handleRoot()
               ".narrow{flex:0 0 64px}.del{display:flex;align-items:center;gap:4px;margin:0;white-space:nowrap}.del input{width:auto}"
               "button{margin-top:16px;padding:12px 24px;background:#ffca41;color:#000;border:0;border-radius:6px;font-weight:bold;font-size:16px}"
               ".warn{background:#5a1d1d;padding:10px;border-radius:6px}"
+              ".up{display:flex;gap:6px;align-items:center;margin:0}.up input{font-size:13px;padding:4px}"
+              ".up button,button.sec{margin:0;padding:6px 10px;font-size:14px}button.sec{background:#444;color:#eee}"
+              ".ico{width:30px;text-align:center}"
               "</style></head><body><h2>Крипто-тикер</h2>");
     if (webPassword.isEmpty())
         html += F("<p class=\"warn\">Страница открыта всем в сети — задайте пароль внизу.</p>");
@@ -130,6 +160,20 @@ static void handleRoot()
         html += settings.tickers[i];
     }
     html += F("\">");
+
+    html += F("<h3>Названия</h3><table>");
+    for (int i = 0; i < settings.tickerCount; i++)
+    {
+        const char *name = settings.tickers[i];
+        String upper = name;
+        upper.toUpperCase();
+        String builtin = coinBuiltinName(name);
+        html += "<tr><td>" + upper + "</td><td><input name=\"n_" + String(name) + "\" maxlength=\"24\" placeholder=\"" +
+                htmlEscape(builtin.length() ? builtin.c_str() : upper.c_str()) + "\" value=\"" +
+                htmlEscape(coinCustomName(name).c_str()) + "\"></td></tr>";
+    }
+    html += F("</table><small>Пусто — встроенное имя (подсказка в поле). Только латиница: "
+              "до 8 символов крупным шрифтом, длиннее — мелким.</small>");
 
     html += F("<h3>Алерты</h3><table><tr><th>Пара</th><th>Цена</th><th>Выше</th><th>Ниже</th></tr>");
     for (int i = 0; i < settings.tickerCount; i++)
@@ -154,6 +198,7 @@ static void handleRoot()
     html += F("</div><small>Одинаковые часы — ночной режим выключен.</small>"
               "<br><button type=\"submit\">Сохранить</button></form>");
 
+    appendIconSection(html);
     appendWifiSection(html);
 
     html += F("<h3>Пароль страницы</h3><form method=\"post\" action=\"/password\"><div class=\"row\">"
@@ -201,6 +246,10 @@ static void handleSave()
 
         int slot = updated.tickerCount++;
         strlcpy(updated.tickers[slot], name, TICKER_LEN);
+
+        String nameField = "n_" + String(name);
+        if (server.hasArg(nameField))
+            coinSetCustomName(name, server.arg(nameField));
 
         // Alerts from the form (only pairs that were on the page have fields)
         String above = "a_" + String(name), below = "b_" + String(name);
@@ -307,6 +356,136 @@ static void handlePassword()
     server.send(303);
 }
 
+// Icon upload: the pair comes in the URL (?name=), the file is buffered in
+// PSRAM, validated and only then written to LittleFS
+static uint8_t *uploadBuf = nullptr;
+static size_t uploadLen = 0;
+static bool uploadTooBig = false;
+static bool uploadAuthorized = false;
+
+static bool validIconName(String &name)
+{
+    char normalized[TICKER_LEN];
+    if (name.length() == 0 || name.length() >= TICKER_LEN || !settingsNormalizeTicker(name.c_str(), normalized))
+        return false;
+    name = normalized;
+    return true;
+}
+
+static void refreshIfShown(const String &name)
+{
+    if (name == settings.tickers[currentTicker])
+        setTickerInfo();
+}
+
+static void handleIconUploadChunk(HTTPUpload &upload)
+{
+    if (upload.status == UPLOAD_FILE_START)
+    {
+        uploadAuthorized = webPassword.isEmpty() || server.authenticate(WEB_USER, webPassword.c_str());
+        uploadLen = 0;
+        uploadTooBig = false;
+        if (!uploadBuf)
+            uploadBuf = (uint8_t *)ps_malloc(ICON_MAX_BYTES);
+    }
+    else if (upload.status == UPLOAD_FILE_WRITE && uploadAuthorized && uploadBuf)
+    {
+        if (uploadLen + upload.currentSize > ICON_MAX_BYTES)
+            uploadTooBig = true;
+        else
+        {
+            memcpy(uploadBuf + uploadLen, upload.buf, upload.currentSize);
+            uploadLen += upload.currentSize;
+        }
+    }
+}
+
+static void handleIconUploadDone()
+{
+    bool hadFile = uploadLen > 0 || uploadTooBig;
+    size_t len = uploadLen;
+    uploadLen = 0;
+    if (!checkAuth())
+        return;
+    if (!hadFile || !uploadAuthorized)
+    {
+        server.send(400, "text/plain; charset=utf-8", "Нет файла");
+        return;
+    }
+
+    String name = server.arg("name");
+    if (!validIconName(name))
+    {
+        server.send(400, "text/plain; charset=utf-8", "Неверное имя пары");
+        return;
+    }
+    const char *error = uploadTooBig ? "Файл больше 16 КБ" : iconValidate(uploadBuf, len);
+    if (error)
+    {
+        server.send(400, "text/plain; charset=utf-8", error);
+        return;
+    }
+
+    File file = LittleFS.open(iconPath(name.c_str()), "w");
+    bool ok = file && file.write(uploadBuf, len) == len;
+    file.close();
+    if (!ok)
+    {
+        server.send(500, "text/plain; charset=utf-8", "Не удалось сохранить файл");
+        return;
+    }
+
+    Serial.printf("[WEB] Icon for %s saved (%u bytes)\n", name.c_str(), len);
+    refreshIfShown(name);
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
+// server.on(uri, fn, uploadFn) would also call uploadFn for non-multipart
+// requests (the body-less first request of digest auth) and crash in
+// server.upload(); this handler only takes multipart uploads.
+class IconUploadHandler : public RequestHandler
+{
+public:
+    bool canHandle(HTTPMethod method, String uri) override { return method == HTTP_POST && uri == "/icon"; }
+    bool canUpload(String uri) override { return uri == "/icon"; }
+    bool handle(WebServer &, HTTPMethod, String) override
+    {
+        handleIconUploadDone();
+        return true;
+    }
+    void upload(WebServer &, String, HTTPUpload &upload) override { handleIconUploadChunk(upload); }
+};
+
+static void handleIconDelete()
+{
+    if (!checkAuth())
+        return;
+    String name = server.arg("name");
+    if (validIconName(name))
+    {
+        iconDelete(name.c_str());
+        refreshIfShown(name);
+    }
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
+static void handleIconGet()
+{
+    if (!checkAuth())
+        return;
+    String name = server.arg("name");
+    if (!validIconName(name) || !iconExists(name.c_str()))
+    {
+        server.send(404, "text/plain", "Not found");
+        return;
+    }
+    File file = LittleFS.open(iconPath(name.c_str()), "r");
+    server.streamFile(file, "image/png");
+    file.close();
+}
+
 void webConfigResetPassword()
 {
     Preferences prefs;
@@ -335,6 +514,9 @@ void webConfigBegin()
     server.on("/save", HTTP_POST, handleSave);
     server.on("/wifi", HTTP_POST, handleWifiSave);
     server.on("/password", HTTP_POST, handlePassword);
+    server.on("/icon", HTTP_GET, handleIconGet);
+    server.addHandler(new IconUploadHandler());
+    server.on("/icon/delete", HTTP_POST, handleIconDelete);
     server.onNotFound([]()
                       { server.send(404, "text/plain", "Not found"); });
     server.begin();

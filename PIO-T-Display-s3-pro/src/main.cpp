@@ -16,6 +16,8 @@
 #include "Settings.h"
 #include "Alerts.h"
 #include "WebConfig.h"
+#include "ChartView.h"
+#include "IconStore.h"
 
 // Define display and touch hardware specifics
 LilyGo_Class amoled;
@@ -118,6 +120,7 @@ void setup()
     showQRCodeInContainer(service_name, pop);
 
     settingsLoad();
+    iconStoreBegin();
 
     // Show the loading screen; it stays up while Wi-Fi is connecting
     lv_scr_load(ui_loading);
@@ -151,6 +154,13 @@ void setup()
 
 void loop()
 {
+    // A long iteration freezes the screen: log it
+    static unsigned long lastLoop = 0;
+    unsigned long loopGap = millis() - lastLoop;
+    if (lastLoop && loopGap > 300)
+        Serial.printf("[UI] loop stalled for %lu ms\n", loopGap);
+    lastLoop = millis();
+
     // Handle LVGL tasks
     lv_task_handler();
     delay(5);
@@ -205,6 +215,7 @@ void loop()
 
     // Push fresh prices / connection state from the network task to the UI
     handleBinanceWebSocket();
+    chartViewLoop();
 
     static unsigned long lastPixelShift = 0;
     if (millis() - lastPixelShift > PIXEL_SHIFT_INTERVAL_MS)
@@ -303,6 +314,8 @@ void startApp()
     started = true;
     initiateNTPTimeSync();  // Non-blocking
     initBinanceWebSocket(); // Starts the network task
+    chartViewInit();
+    iconViewInit();
     setTickerInfo();
     updateBrightness();
     lv_scr_load(ui_ticker);
@@ -313,6 +326,7 @@ void onWiFiConnected()
 {
     startApp();
     webConfigBegin(); // once
+    showIpAddress(10000); // where to find the settings page
 }
 
 void toggleScreenRotation()

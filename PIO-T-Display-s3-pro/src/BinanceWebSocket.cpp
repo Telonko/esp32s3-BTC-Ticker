@@ -12,6 +12,9 @@
 #include <ui.h>
 #include "Settings.h"
 #include "Alerts.h"
+#include "History.h"
+#include "IconStore.h"
+#include "CoinNames.h"
 
 #define WS_HOST "stream.binance.com"
 #define WS_PORT 9443
@@ -52,6 +55,9 @@ static uint32_t requestId = 0;
 static uint32_t shownVersion = 0;
 static int8_t shownWsState = -1; // -1: not drawn yet
 static Quote shownQuote = {-1, -1, -1};
+// Top-right corner shows the pair name, or the IP address until this time
+static unsigned long ipShownUntil = 0;
+static void showTickerName();
 
 static WebSocketsClient webSocket;
 static TaskHandle_t networkTaskHandle = nullptr;
@@ -86,6 +92,10 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
     {
     case WStype_TEXT:
     {
+        // Short stalls (below WS_STALE_MS) show up as a lagging price
+        unsigned long gap = millis() - lastMessageAt;
+        if (lastMessageAt && gap > 3000)
+            Serial.printf("[WS] No data for %.1f s (RSSI %d dBm)\n", gap / 1000.0, WiFi.RSSI());
         lastMessageAt = millis();
 
         // Keep only the fields we need: much less RAM and parsing time
@@ -130,6 +140,8 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
             }
         }
         portEXIT_CRITICAL(&stateMux);
+
+        historyOnPrice(name, q.last);
 
         if (first)
             Serial.printf("[WS] First %s price: %.2f\n", name, q.last);
@@ -276,6 +288,7 @@ void initBinanceWebSocket()
         return;
 
     wsPublishStreams();
+    historyBegin();
     // Core 0 hosts the Wi-Fi stack; the Arduino loop (LVGL) stays on core 1
     xTaskCreatePinnedToCore(networkTask, "binance_ws", NETWORK_TASK_STACK, nullptr, 1, &networkTaskHandle, 0);
 }
@@ -301,6 +314,9 @@ void wsPublishStreams()
     pubWanted = wanted;
     pubVersion++;
     portEXIT_CRITICAL(&stateMux);
+
+    if (listChanged)
+        historySetTickers(settings.tickers, settings.tickerCount);
 }
 
 bool wsGetPrice(int idx, double *last)
@@ -330,6 +346,9 @@ static void showCurrentQuote()
 
 void handleBinanceWebSocket()
 {
+    if (ipShownUntil && (long)(millis() - ipShownUntil) >= 0)
+        showTickerName();
+
     // Also flag a connection that is open but silent. Read the timestamp
     // before millis(): it is updated on the other core.
     unsigned long last = lastMessageAt;
@@ -352,34 +371,69 @@ void handleBinanceWebSocket()
     }
 }
 
+static void showTickerName()
+{
+    ipShownUntil = 0;
+    const char *ticker = settings.tickers[currentTicker];
+
+    // Font25 is monospaced, 15 px per char: 8 chars fill the 120 px label.
+    // Longer names use the smaller default font (~13 chars), then "..."
+    String name = coinDisplayName(ticker);
+    bool fits = name.length() <= 8;
+    lv_obj_set_style_text_font(ui_Label_text, fits ? &ui_font_Font25 : &lv_font_montserrat_16, 0);
+    lv_obj_set_style_pad_top(ui_Label_text, fits ? 0 : 5, 0);
+    lv_label_set_long_mode(ui_Label_text, LV_LABEL_LONG_DOT);
+    lv_label_set_text(ui_Label_text, name.c_str());
+    lv_obj_clear_flag(ui_Label_text, LV_OBJ_FLAG_HIDDEN);
+
+    // An uploaded icon replaces the built-in one
+    bool customIcon = iconViewShow(ticker);
+    if (strcmp(ticker, "eth") == 0)
+    {
+        lv_obj_add_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
+        if (customIcon)
+            lv_obj_add_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_clear_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
+    }
+    else if (strcmp(ticker, "btc") == 0)
+    {
+        lv_obj_add_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
+        if (customIcon)
+            lv_obj_add_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_clear_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
+    }
+    else
+    {
+        lv_obj_add_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void showIpAddress(unsigned long durationMs)
+{
+    if (WiFi.status() != WL_CONNECTED)
+        return;
+
+    // The yellow corner is ~140 px wide: Font25 would not fit an IP address
+    lv_obj_set_style_text_font(ui_Label_text, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_pad_top(ui_Label_text, 5, 0);
+    lv_label_set_text(ui_Label_text, WiFi.localIP().toString().c_str());
+    lv_obj_clear_flag(ui_Label_text, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
+    iconViewHide();
+    ipShownUntil = millis() + durationMs;
+    if (ipShownUntil == 0)
+        ipShownUntil = 1;
+}
+
 void setTickerInfo()
 {
     if (currentTicker >= settings.tickerCount)
         currentTicker = 0;
-    const char *ticker = settings.tickers[currentTicker];
-
-    lv_obj_clear_flag(ui_Label_text, LV_OBJ_FLAG_HIDDEN);
-    if (strcmp(ticker, "eth") == 0)
-    {
-        lv_label_set_text(ui_Label_text, "Ethereum");
-        lv_obj_add_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
-    }
-    else if (strcmp(ticker, "btc") == 0)
-    {
-        lv_label_set_text(ui_Label_text, "Bitcoin");
-        lv_obj_add_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
-    }
-    else
-    {
-        char upper[TICKER_LEN];
-        for (int i = 0; i < TICKER_LEN; i++)
-            upper[i] = toupper((unsigned char)ticker[i]);
-        lv_label_set_text(ui_Label_text, upper);
-        lv_obj_add_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
-    }
+    showTickerName();
 
     wsPublishStreams();
 

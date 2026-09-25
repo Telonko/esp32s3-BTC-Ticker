@@ -22,6 +22,9 @@ void handleBinanceWebSocket();
 // Refreshes ticker name, icon and price for currentTicker (UI thread only).
 void setTickerInfo();
 
+// Shows the IP address in place of the pair name for a while
+void showIpAddress(unsigned long durationMs);
+
 // Shows the next pair from settings.tickers
 void selectNextTicker();
 
