@@ -100,8 +100,10 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
         break;
     }
     case WStype_DISCONNECTED:
-        if (wsConnected)
-            Serial.println("[WS] Disconnected");
+        // Also fired on every failed connection attempt (every WS_RECONNECT_INTERVAL_MS)
+        Serial.printf("[WS] %s, free heap %u, largest block %u\n",
+                      wsConnected ? "Disconnected" : "Connection failed",
+                      ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         wsConnected = false;
         break;
     case WStype_CONNECTED:

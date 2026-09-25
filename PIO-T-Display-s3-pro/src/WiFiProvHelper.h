@@ -12,6 +12,10 @@ void resetProvisioning();  // Resets Wi-Fi provisioning by erasing stored creden
 
 bool connectToNetwork(const char *ssid, const char *pwd);
 
+// Lower TX power = lower current peaks. Full power (19.5 dBm) causes brownout
+// resets when the board switches between USB and battery power.
+#define WIFI_TX_POWER WIFI_POWER_11dBm
+
 // Applies provisioning events to the UI; call from loop() (LVGL thread)
 void processProvEvents();
 

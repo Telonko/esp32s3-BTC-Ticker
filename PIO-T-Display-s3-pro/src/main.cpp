@@ -3,7 +3,8 @@
 #include <LV_Helper.h>
 #include <LilyGo_AMOLED.h>
 #include <ui.h>
-#include <Pangodream_18650_CL.h>
+#include <Preferences.h>
+#include <esp_system.h>
 
 #include "TimeHelper.h"
 #include "WiFiProvHelper.h"
@@ -11,15 +12,12 @@
 #include "BinanceWebSocket.h"
 #include "pin_config.h"
 #include "handleButtons.h"
+#include "Battery.h"
 
 #if __has_include("secrets.h")
     #include "secrets.h"
 #endif
 
-#define CONV_FACTOR 1.8
-#define READS 20
-
-Pangodream_18650_CL BL(PIN_BAT_VOLT, CONV_FACTOR, READS);
 // Define display and touch hardware specifics
 LilyGo_Class amoled;
 
@@ -31,10 +29,57 @@ const uint8_t home_brighest = 50;
 void SysProvEvent(arduino_event_t *sys_event);
 void toggleScreenRotation();
 
+static const char *resetReasonName(uint8_t reason)
+{
+    switch (reason)
+    {
+    case ESP_RST_POWERON: return "POWERON";
+    case ESP_RST_EXT: return "EXT";
+    case ESP_RST_SW: return "SW";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "INT_WDT";
+    case ESP_RST_TASK_WDT: return "TASK_WDT";
+    case ESP_RST_WDT: return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    case ESP_RST_SDIO: return "SDIO";
+    default: return "UNKNOWN";
+    }
+}
+
+// Keeps the last reset reasons in NVS: resets on battery happen without a
+// serial monitor attached, so they can only be inspected on a later boot.
+static void logResetReason()
+{
+    const size_t historySize = 10;
+    uint8_t history[historySize] = {0}; // reason + 1, 0 marks an empty slot
+
+    Preferences prefs;
+    prefs.begin("diag", false);
+    if (prefs.isKey("resets"))
+        prefs.getBytes("resets", history, historySize);
+    memmove(history + 1, history, historySize - 1);
+    history[0] = (uint8_t)esp_reset_reason() + 1;
+    prefs.putBytes("resets", history, historySize);
+    uint32_t boots = prefs.getUInt("boots", 0) + 1;
+    prefs.putUInt("boots", boots);
+    prefs.end();
+
+    Serial.printf("[DIAG] Boot #%u, reset reasons (newest first):", boots);
+    for (size_t i = 0; i < historySize && history[i]; i++)
+    {
+        Serial.printf(" %s", resetReasonName(history[i] - 1));
+    }
+    Serial.println();
+}
+
 void setup()
 {
     Serial.begin(115200);
+    // Without a USB host, writes to USB-CDC would block for the TX timeout
+    Serial.setTxTimeoutMs(0);
     delay(1000); // Give some time for the Serial Monitor to initialize
+    logResetReason();
 
     // Initialize AMOLED Display
     if (!amoled.begin())
@@ -70,6 +115,7 @@ void setup()
         if (WiFi.status() != WL_CONNECTED)
         {
             WiFi.begin();
+            WiFi.setTxPower(WIFI_TX_POWER);
 
             // Wait for the connection for up to 10 seconds
             unsigned long startAttemptTime = millis();
@@ -121,11 +167,18 @@ void loop()
         lastTimeUpdate = millis();
 
         static int shownBattery = -1;
-        int battery = BL.getBatteryChargeLevel();
+        int battery = batteryUpdate();
         if (battery != shownBattery)
         {
             shownBattery = battery;
             lv_label_set_text_fmt(ui_Label_Battary, "%d%%", battery);
+        }
+
+        static unsigned long lastBatteryLog = 0;
+        if (lastBatteryLog == 0 || millis() - lastBatteryLog > 30000)
+        {
+            lastBatteryLog = millis();
+            Serial.printf("[BAT] %u mV, %d%%\n", batteryMilliVolts(), battery);
         }
 
         static int8_t shownWifi = -1;

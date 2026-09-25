@@ -89,6 +89,7 @@ bool connectToNetwork(const char *ssid, const char *pwd) {
     Serial.printf("Connecting to WiFi %s\n", ssid);
 
     WiFi.begin(ssid, pwd);
+    WiFi.setTxPower(WIFI_TX_POWER);
     // Wait for the connection for up to 10 seconds
     unsigned long startAttemptTime = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
