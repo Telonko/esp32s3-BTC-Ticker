@@ -13,6 +13,7 @@
 #include <esp_ota_ops.h>
 #include <ui.h>
 #include "TimeHelper.h"
+#include "OtaGuard.h"
 
 #define WEB_USER "admin"
 #define WEB_REALM "ticker"
@@ -139,8 +140,9 @@ static void appendFirmwareSection(String &html)
     html += F("<h3>Прошивка</h3><form method=\"post\" enctype=\"multipart/form-data\" action=\"/update\" class=\"up\">"
               "<input type=\"file\" name=\"f\" accept=\".bin\" required><button type=\"submit\">Обновить</button></form>");
     html += "<small>Сейчас: сборка " + String(build) + ", работает " + String(millis() / 60000) + " мин. "
-            "Файл — .pio/build/T-Display-AMOLED/firmware.bin. Загрузка занимает около минуты, "
-            "потом плата перезагрузится. Не выключайте питание.</small>";
+            "Файл — .pio/build/T-Display-AMOLED/firmware.bin. Загрузка около 25 секунд, "
+            "потом плата перезагрузится. Если новая прошивка 3 раза подряд упадёт в первую минуту, "
+            "плата сама вернётся на предыдущую.</small>";
 }
 
 static void handleRoot()
@@ -580,6 +582,7 @@ static void handleOtaDone()
     server.send(200, "text/html; charset=utf-8",
                 "<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"20;url=/\">"
                 "<p>Прошивка загружена, плата перезагружается. Страница обновится через 20 секунд.</p>");
+    otaGuardArm();
     delay(500);
     ESP.restart();
 }

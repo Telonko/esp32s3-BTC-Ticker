@@ -31,7 +31,8 @@ struct Quote
     double last;
     double high;
     double low;
-    double open; // 24 h ago, for the change in %
+    double open;   // 24 h ago, for the change in %
+    double volume; // 24 h quote volume, USDT
 };
 
 // Shared between the UI (writer of names/wanted) and the network task
@@ -55,7 +56,7 @@ static uint32_t requestId = 0;
 // UI-side state
 static uint32_t shownVersion = 0;
 static int8_t shownWsState = -1; // -1: not drawn yet
-static Quote shownQuote = {-1, -1, -1, -1};
+static Quote shownQuote = {-1, -1, -1, -1, -1};
 // Top-right corner shows the pair name, or the IP address until this time
 static unsigned long ipShownUntil = 0;
 static void showTickerName();
@@ -106,6 +107,7 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
         filter["h"] = true;
         filter["l"] = true;
         filter["o"] = true;
+        filter["q"] = true;
 
         JsonDocument doc;
         DeserializationError error = deserializeJson(doc, payload, length, DeserializationOption::Filter(filter));
@@ -129,6 +131,7 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
         q.high = strtod(doc["h"] | "0", nullptr);
         q.low = strtod(doc["l"] | "0", nullptr);
         q.open = strtod(doc["o"] | "0", nullptr);
+        q.volume = strtod(doc["q"] | "0", nullptr);
 
         bool first = false;
         portENTER_CRITICAL(&stateMux);
@@ -246,7 +249,7 @@ static void syncSubscription()
     for (int i = 0; i < pubCount; i++)
     {
         if (!isSubscribed(pubNames[i]))
-            quotes[i] = {0, 0, 0, 0};
+            quotes[i] = {0, 0, 0, 0, 0};
     }
     portEXIT_CRITICAL(&stateMux);
 
@@ -320,6 +323,17 @@ void wsPublishStreams()
 
     if (listChanged)
         historySetTickers(settings.tickers, settings.tickerCount);
+}
+
+bool wsGetVolume(int idx, double *volume)
+{
+    if (idx < 0 || idx >= MAX_TICKERS)
+        return false;
+
+    portENTER_CRITICAL(&stateMux);
+    *volume = quotes[idx].volume;
+    portEXIT_CRITICAL(&stateMux);
+    return *volume > 0;
 }
 
 bool wsGetPrice(int idx, double *last)
@@ -442,7 +456,7 @@ void setTickerInfo()
 
     // All pairs are streamed, so the price is usually there already;
     // "--" only right after boot or a list change.
-    shownQuote = {-1, -1, -1, -1};
+    shownQuote = {-1, -1, -1, -1, -1};
     showCurrentQuote();
 }
 

@@ -35,4 +35,7 @@ void wsPublishStreams();
 // Last price of settings.tickers[idx]; false if no data yet
 bool wsGetPrice(int idx, double *last);
 
+// 24 h quote volume (USDT) of settings.tickers[idx]; false if no data yet
+bool wsGetVolume(int idx, double *volume);
+
 #endif // BINANCEWEBSOCKET_H

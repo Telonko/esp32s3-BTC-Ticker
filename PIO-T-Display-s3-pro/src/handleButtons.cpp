@@ -21,7 +21,8 @@ bool button1_longDone = false;
 unsigned long button1_ReleasedTime = 0;
 bool button1_clickPending = false;
 
-// Button 1 (GPIO0): click toggles high/low <-> chart (or dismisses an alert),
+// Button 1 (GPIO0): click cycles the bottom row high/low -> chart -> volume
+// (or dismisses an alert),
 // double click shows the IP address, hold 5 s starts the setup access point
 // and resets the page password; click on the setup screen closes it
 void handleButton1()

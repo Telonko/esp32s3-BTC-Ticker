@@ -18,6 +18,7 @@
 #include "WebConfig.h"
 #include "ChartView.h"
 #include "IconStore.h"
+#include "OtaGuard.h"
 
 // Define display and touch hardware specifics
 LilyGo_Class amoled;
@@ -100,6 +101,7 @@ void setup()
     Serial.setTxTimeoutMs(0);
     delay(1000); // Give some time for the Serial Monitor to initialize
     logResetReason();
+    otaGuardBoot(); // may roll back to the previous firmware and restart
 
     // Initialize AMOLED Display
     if (!amoled.begin())
@@ -185,6 +187,7 @@ void loop()
 
         updateBrightness();
         updateChangeVisibility();
+        otaGuardLoop();
 
         static unsigned long lastBatteryLog = 0;
         if (lastBatteryLog == 0 || millis() - lastBatteryLog > 30000)
