@@ -6,10 +6,8 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 
-#define TICKERS_COUNT 3
-
-extern const char *screenTickers[TICKERS_COUNT];
-extern const char *currentTicker;
+// Index of the displayed pair in settings.tickers (UI thread only)
+extern int currentTicker;
 
 // Externally defined function to update the UI
 void updatePriceUI(double lastRate, double highRate, double lowRate);
@@ -21,8 +19,17 @@ void initBinanceWebSocket();
 // Called from loop(): pushes fresh prices / connection state to LVGL.
 void handleBinanceWebSocket();
 
-// Refreshes ticker name and icon for currentTicker (UI thread only); the network
-// task then re-subscribes to the new pair.
+// Refreshes ticker name, icon and price for currentTicker (UI thread only).
 void setTickerInfo();
+
+// Shows the next pair from settings.tickers
+void selectNextTicker();
+
+// Hands the ticker list to the network task, which subscribes to all pairs.
+// Call after settings or currentTicker change.
+void wsPublishStreams();
+
+// Last price of settings.tickers[idx]; false if no data yet
+bool wsGetPrice(int idx, double *last);
 
 #endif // BINANCEWEBSOCKET_H

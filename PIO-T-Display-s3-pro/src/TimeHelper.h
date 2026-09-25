@@ -5,5 +5,6 @@
 void initiateNTPTimeSync();  // Initiates non-blocking NTP sync
 bool isTimeSynchronized();   // Returns true if NTP time is synced
 void updateTimeAndDate();    // Updates the UI with current time and date
+int localHour();             // 0..23, or -1 until NTP time is synced
 
 #endif // TIME_HELPER_H

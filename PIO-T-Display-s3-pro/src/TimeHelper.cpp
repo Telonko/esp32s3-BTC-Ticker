@@ -51,3 +51,13 @@ void updateTimeAndDate() {
     strftime(timeStr, sizeof(timeStr), "%H:%M", &timeInfo);
     lv_label_set_text(ui_Label_time, timeStr);
 }
+
+int localHour() {
+    if (!isTimeSynchronized()) {
+        return -1;
+    }
+    time_t now = time(nullptr);
+    struct tm timeInfo;
+    localtime_r(&now, &timeInfo);
+    return timeInfo.tm_hour;
+}

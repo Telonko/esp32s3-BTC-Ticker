@@ -20,8 +20,40 @@ static const struct
     {3830, 50}, {3870, 60}, {3920, 70}, {3980, 80}, {4060, 90}, {4150, 100},
 };
 
+// Charging detection: voltage trend over CHARGE_WINDOW samples
+#define CHARGE_SAMPLE_MS 30000
+#define CHARGE_WINDOW 5         // 5 samples = 2 minutes
+#define CHARGE_RISE_MV 8        // rising at least this much -> charging
+#define CHARGE_FALL_MV -3       // falling at least this much -> not charging
+
 static float filteredMv = 0;
 static int shownPercent = -1;
+static uint16_t trend[CHARGE_WINDOW];
+static uint8_t trendCount = 0;
+static unsigned long lastTrendSample = 0;
+static bool charging = false;
+
+static void updateChargingTrend()
+{
+    if (lastTrendSample != 0 && millis() - lastTrendSample < CHARGE_SAMPLE_MS)
+        return;
+    lastTrendSample = millis();
+
+    if (trendCount == CHARGE_WINDOW)
+    {
+        memmove(trend, trend + 1, sizeof(trend[0]) * (CHARGE_WINDOW - 1));
+        trendCount--;
+    }
+    trend[trendCount++] = (uint16_t)filteredMv;
+    if (trendCount < CHARGE_WINDOW)
+        return;
+
+    int delta = (int)trend[CHARGE_WINDOW - 1] - (int)trend[0];
+    if (delta >= CHARGE_RISE_MV)
+        charging = true;
+    else if (delta <= CHARGE_FALL_MV)
+        charging = false;
+}
 
 // Median-ish reading: drop the extremes caused by Wi-Fi TX current spikes
 static uint32_t readMilliVolts()
@@ -81,6 +113,8 @@ int batteryUpdate()
     else
         filteredMv += BAT_EMA_ALPHA * ((float)mv - filteredMv);
 
+    updateChargingTrend();
+
     int percent = percentFromMilliVolts(filteredMv);
     if (shownPercent < 0 || abs(percent - shownPercent) >= BAT_HYSTERESIS || percent == 0 || percent == 100)
     {
@@ -92,4 +126,9 @@ int batteryUpdate()
 uint32_t batteryMilliVolts()
 {
     return (uint32_t)filteredMv;
+}
+
+bool batteryCharging()
+{
+    return charging;
 }

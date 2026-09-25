@@ -2,21 +2,26 @@
 //
 // Threading model:
 //  - networkTask (core 0) owns the WebSocket: connect, TLS, parsing,
-//    SUBSCRIBE/UNSUBSCRIBE when the UI switches currentTicker.
-//  - loop() (core 1) owns LVGL and only reads the shared quotes.
+//    SUBSCRIBE/UNSUBSCRIBE to match the streams published by the UI.
+//  - loop() (core 1) owns LVGL and settings; it publishes the wanted streams
+//    and reads the shared quotes.
 // LVGL is not thread-safe, so nothing in the network task touches UI objects.
 
 #include "BinanceWebSocket.h"
 #include <WiFi.h>
 #include <ui.h>
+#include "Settings.h"
+#include "Alerts.h"
 
 #define WS_HOST "stream.binance.com"
 #define WS_PORT 9443
 #define WS_RECONNECT_INTERVAL_MS 5000
 #define NETWORK_TASK_STACK 12288
+// No ticker message for this long = dead connection (TCP can stay "open"
+// for a long time after the peer is gone); reconnect right away
+#define WS_STALE_MS 20000
 
-const char *screenTickers[TICKERS_COUNT] = {"ltc", "eth", "btc"};
-const char *currentTicker = screenTickers[0];
+int currentTicker = 0;
 
 struct Quote
 {
@@ -25,14 +30,22 @@ struct Quote
     double low;
 };
 
-// Written by the network task, read by the UI loop
-static Quote quotes[TICKERS_COUNT];
-static portMUX_TYPE quotesMux = portMUX_INITIALIZER_UNLOCKED;
+// Shared between the UI (writer of names/wanted) and the network task
+// (writer of quotes); everything below is guarded by stateMux.
+static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
+static char pubNames[MAX_TICKERS][TICKER_LEN];
+static uint8_t pubCount = 0;
+static uint32_t pubWanted = 0; // bit i: stream settings.tickers[i]
+static uint32_t pubVersion = 0;
+static Quote quotes[MAX_TICKERS];
 static volatile uint32_t quotesVersion = 0;
 static volatile bool wsConnected = false;
+static volatile unsigned long lastMessageAt = 0;
 
 // Network task only
-static int subscribedTicker = -1;
+static char subNames[MAX_TICKERS][TICKER_LEN]; // currently subscribed
+static uint8_t subCount = 0;
+static uint32_t syncedVersion = UINT32_MAX;
 static uint32_t requestId = 0;
 
 // UI-side state
@@ -43,26 +56,27 @@ static Quote shownQuote = {-1, -1, -1};
 static WebSocketsClient webSocket;
 static TaskHandle_t networkTaskHandle = nullptr;
 
-static int tickerIndex(const char *ticker)
+static bool isSubscribed(const char *name)
 {
-    for (int i = 0; i < TICKERS_COUNT; i++)
+    for (int i = 0; i < subCount; i++)
     {
-        if (strcmp(ticker, screenTickers[i]) == 0)
-            return i;
+        if (strcmp(subNames[i], name) == 0)
+            return true;
     }
-    return -1;
+    return false;
 }
 
-// Maps "BTCUSDT" to its index in screenTickers
-static int symbolIndex(const char *symbol)
+// Maps "BTCUSDT" to a subscribed name ("btc"); nullptr if not subscribed
+// (e.g. messages still in flight after UNSUBSCRIBE).
+static const char *subscribedName(const char *symbol)
 {
-    for (int i = 0; i < TICKERS_COUNT; i++)
+    for (int i = 0; i < subCount; i++)
     {
-        size_t len = strlen(screenTickers[i]);
-        if (strncasecmp(symbol, screenTickers[i], len) == 0 && strcasecmp(symbol + len, "usdt") == 0)
-            return i;
+        size_t len = strlen(subNames[i]);
+        if (strncasecmp(symbol, subNames[i], len) == 0 && strcasecmp(symbol + len, "usdt") == 0)
+            return subNames[i];
     }
-    return -1;
+    return nullptr;
 }
 
 // Runs in the network task
@@ -72,6 +86,8 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
     {
     case WStype_TEXT:
     {
+        lastMessageAt = millis();
+
         // Keep only the fields we need: much less RAM and parsing time
         JsonDocument filter;
         filter["s"] = true;
@@ -88,27 +104,35 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
         }
 
         // Subscription replies ({"result":null,"id":N}) and errors have no symbol
-        JsonObject data = doc.as<JsonObject>();
-        int idx = symbolIndex(data["s"] | "");
-        if (idx < 0)
+        const char *name = subscribedName(doc["s"] | "");
+        if (!name)
         {
-            Serial.printf("[WS] <- %.*s\n", (int)length, (const char *)payload);
+            if (!doc["s"].is<const char *>())
+                Serial.printf("[WS] <- %.*s\n", (int)length, (const char *)payload);
             return;
         }
 
         Quote q;
-        q.last = strtod(data["c"] | "0", nullptr);
-        q.high = strtod(data["h"] | "0", nullptr);
-        q.low = strtod(data["l"] | "0", nullptr);
+        q.last = strtod(doc["c"] | "0", nullptr);
+        q.high = strtod(doc["h"] | "0", nullptr);
+        q.low = strtod(doc["l"] | "0", nullptr);
 
-        portENTER_CRITICAL(&quotesMux);
-        bool first = quotes[idx].last == 0;
-        quotes[idx] = q;
-        quotesVersion++;
-        portEXIT_CRITICAL(&quotesMux);
+        bool first = false;
+        portENTER_CRITICAL(&stateMux);
+        for (int i = 0; i < pubCount; i++)
+        {
+            if (strcmp(pubNames[i], name) == 0)
+            {
+                first = quotes[i].last == 0;
+                quotes[i] = q;
+                quotesVersion++;
+                break;
+            }
+        }
+        portEXIT_CRITICAL(&stateMux);
 
         if (first)
-            Serial.printf("[WS] First %s price: %.2f (showing %s)\n", screenTickers[idx], q.last, currentTicker);
+            Serial.printf("[WS] First %s price: %.2f\n", name, q.last);
         break;
     }
     case WStype_DISCONNECTED:
@@ -117,10 +141,12 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
                       wsConnected ? "Disconnected" : "Connection failed",
                       ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         wsConnected = false;
-        subscribedTicker = -1;
+        subCount = 0;
+        syncedVersion = UINT32_MAX;
         break;
     case WStype_CONNECTED:
         Serial.println("[WS] Connected");
+        lastMessageAt = millis();
         wsConnected = true;
         break;
     case WStype_ERROR:
@@ -131,27 +157,85 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
     }
 }
 
-static void sendSubscription(const char *method, int ticker)
+static void sendSubscription(const char *method, char names[][TICKER_LEN], int count)
 {
-    char msg[96];
-    snprintf(msg, sizeof(msg), "{\"method\":\"%s\",\"params\":[\"%susdt@miniTicker\"],\"id\":%u}",
-             method, screenTickers[ticker], ++requestId);
-    Serial.printf("[WS] %s\n", msg);
+    if (count == 0)
+        return;
+
+    String msg = "{\"method\":\"";
+    msg += method;
+    msg += "\",\"params\":[";
+    for (int i = 0; i < count; i++)
+    {
+        if (i)
+            msg += ',';
+        msg += '"';
+        msg += names[i];
+        msg += "usdt@miniTicker\"";
+    }
+    msg += "],\"id\":";
+    msg += ++requestId;
+    msg += '}';
+
+    Serial.printf("[WS] %s\n", msg.c_str());
     webSocket.sendTXT(msg);
 }
 
-// Only the displayed ticker is subscribed. Switching sends UNSUBSCRIBE/SUBSCRIBE
-// over the same connection, so no reconnect and no new TLS handshake.
+// Brings the subscriptions in line with the published wanted set, over the
+// existing connection (no reconnect, no new TLS handshake).
 static void syncSubscription()
 {
-    int wanted = tickerIndex(currentTicker);
-    if (!wsConnected || wanted < 0 || wanted == subscribedTicker)
+    if (!wsConnected || syncedVersion == pubVersion)
         return;
 
-    if (subscribedTicker >= 0)
-        sendSubscription("UNSUBSCRIBE", subscribedTicker);
-    sendSubscription("SUBSCRIBE", wanted);
-    subscribedTicker = wanted;
+    char wanted[MAX_TICKERS][TICKER_LEN];
+    int wantedCount = 0;
+    uint32_t version;
+
+    portENTER_CRITICAL(&stateMux);
+    version = pubVersion;
+    for (int i = 0; i < pubCount; i++)
+    {
+        if (pubWanted & (1u << i))
+            memcpy(wanted[wantedCount++], pubNames[i], TICKER_LEN);
+    }
+    portEXIT_CRITICAL(&stateMux);
+
+    char toUnsub[MAX_TICKERS][TICKER_LEN];
+    int unsubCount = 0;
+    for (int i = 0; i < subCount; i++)
+    {
+        bool keep = false;
+        for (int j = 0; j < wantedCount && !keep; j++)
+            keep = strcmp(subNames[i], wanted[j]) == 0;
+        if (!keep)
+            memcpy(toUnsub[unsubCount++], subNames[i], TICKER_LEN);
+    }
+
+    char toSub[MAX_TICKERS][TICKER_LEN];
+    int newCount = 0;
+    for (int j = 0; j < wantedCount; j++)
+    {
+        if (!isSubscribed(wanted[j]))
+            memcpy(toSub[newCount++], wanted[j], TICKER_LEN);
+    }
+
+    sendSubscription("UNSUBSCRIBE", toUnsub, unsubCount);
+    sendSubscription("SUBSCRIBE", toSub, newCount);
+
+    memcpy(subNames, wanted, sizeof(wanted[0]) * wantedCount);
+    subCount = wantedCount;
+
+    // Drop prices of pairs that are no longer streamed: they would go stale
+    portENTER_CRITICAL(&stateMux);
+    for (int i = 0; i < pubCount; i++)
+    {
+        if (!isSubscribed(pubNames[i]))
+            quotes[i] = {0, 0, 0};
+    }
+    portEXIT_CRITICAL(&stateMux);
+
+    syncedVersion = version;
 }
 
 static void networkTask(void *)
@@ -175,6 +259,13 @@ static void networkTask(void *)
 
         webSocket.loop();
         syncSubscription();
+
+        if (wsConnected && millis() - lastMessageAt > WS_STALE_MS)
+        {
+            Serial.printf("[WS] No data for %d s, reconnecting\n", WS_STALE_MS / 1000);
+            webSocket.disconnect();
+            wsConnected = false;
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -184,21 +275,52 @@ void initBinanceWebSocket()
     if (networkTaskHandle)
         return;
 
+    wsPublishStreams();
     // Core 0 hosts the Wi-Fi stack; the Arduino loop (LVGL) stays on core 1
     xTaskCreatePinnedToCore(networkTask, "binance_ws", NETWORK_TASK_STACK, nullptr, 1, &networkTaskHandle, 0);
 }
 
+void wsPublishStreams()
+{
+    if (currentTicker >= settings.tickerCount)
+        currentTicker = 0;
+
+    // All pairs are streamed: switching is instant with a fresh price, and
+    // alerts work for pairs that are not on screen (~0.3 KB/s per pair)
+    uint32_t wanted = (1u << settings.tickerCount) - 1;
+
+    portENTER_CRITICAL(&stateMux);
+    bool listChanged = pubCount != settings.tickerCount ||
+                       memcmp(pubNames, settings.tickers, sizeof(pubNames[0]) * pubCount) != 0;
+    if (listChanged)
+    {
+        memcpy(pubNames, settings.tickers, sizeof(pubNames));
+        pubCount = settings.tickerCount;
+        memset(quotes, 0, sizeof(quotes));
+    }
+    pubWanted = wanted;
+    pubVersion++;
+    portEXIT_CRITICAL(&stateMux);
+}
+
+bool wsGetPrice(int idx, double *last)
+{
+    if (idx < 0 || idx >= MAX_TICKERS)
+        return false;
+
+    portENTER_CRITICAL(&stateMux);
+    *last = quotes[idx].last;
+    portEXIT_CRITICAL(&stateMux);
+    return *last > 0;
+}
+
 static void showCurrentQuote()
 {
-    int idx = tickerIndex(currentTicker);
-    if (idx < 0)
-        return;
+    portENTER_CRITICAL(&stateMux);
+    Quote q = quotes[currentTicker];
+    portEXIT_CRITICAL(&stateMux);
 
-    portENTER_CRITICAL(&quotesMux);
-    Quote q = quotes[idx];
-    portEXIT_CRITICAL(&quotesMux);
-
-    // Skip redraw when another ticker was updated
+    // Skip redraw when another pair was updated
     if (q.last == shownQuote.last && q.high == shownQuote.high && q.low == shownQuote.low)
         return;
 
@@ -208,7 +330,10 @@ static void showCurrentQuote()
 
 void handleBinanceWebSocket()
 {
-    int8_t ws = wsConnected ? 1 : 0;
+    // Also flag a connection that is open but silent. Read the timestamp
+    // before millis(): it is updated on the other core.
+    unsigned long last = lastMessageAt;
+    int8_t ws = wsConnected && millis() - last < WS_STALE_MS / 2 ? 1 : 0;
     if (ws != shownWsState)
     {
         shownWsState = ws;
@@ -223,19 +348,24 @@ void handleBinanceWebSocket()
     {
         shownVersion = version;
         showCurrentQuote();
+        alertsCheck();
     }
 }
 
 void setTickerInfo()
 {
+    if (currentTicker >= settings.tickerCount)
+        currentTicker = 0;
+    const char *ticker = settings.tickers[currentTicker];
+
     lv_obj_clear_flag(ui_Label_text, LV_OBJ_FLAG_HIDDEN);
-    if (strcmp(currentTicker, "eth") == 0)
+    if (strcmp(ticker, "eth") == 0)
     {
         lv_label_set_text(ui_Label_text, "Ethereum");
         lv_obj_add_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
     }
-    else if (strcmp(currentTicker, "btc") == 0)
+    else if (strcmp(ticker, "btc") == 0)
     {
         lv_label_set_text(ui_Label_text, "Bitcoin");
         lv_obj_add_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
@@ -243,20 +373,24 @@ void setTickerInfo()
     }
     else
     {
-        lv_label_set_text(ui_Label_text, currentTicker);
+        char upper[TICKER_LEN];
+        for (int i = 0; i < TICKER_LEN; i++)
+            upper[i] = toupper((unsigned char)ticker[i]);
+        lv_label_set_text(ui_Label_text, upper);
         lv_obj_add_flag(ui_img_symbol, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // The new ticker was not streamed while unsubscribed: drop its stale price,
-    // labels show "--" until the first update arrives (~1 s)
-    int idx = tickerIndex(currentTicker);
-    if (idx >= 0)
-    {
-        portENTER_CRITICAL(&quotesMux);
-        quotes[idx] = {0, 0, 0};
-        portEXIT_CRITICAL(&quotesMux);
-    }
+    wsPublishStreams();
+
+    // All pairs are streamed, so the price is usually there already;
+    // "--" only right after boot or a list change.
     shownQuote = {-1, -1, -1};
     showCurrentQuote();
+}
+
+void selectNextTicker()
+{
+    currentTicker = (currentTicker + 1) % settings.tickerCount;
+    setTickerInfo();
 }

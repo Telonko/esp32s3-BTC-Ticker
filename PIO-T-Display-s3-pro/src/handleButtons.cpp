@@ -2,18 +2,20 @@
 #include "WiFiProvHelper.h"
 #include "pin_config.h"
 #include "BinanceWebSocket.h"
+#include "Alerts.h"
 #include "handleButtons.h"
 
-#define resetTime 5000  // 5 seconds for reset trigger
-#define rotateTime 4500 // 5 seconds for rotate screen (including delay)
+#define resetTime 5000  // hold button 1 to reset Wi-Fi credentials
+#define rotateTime 4500 // hold button 2 to rotate the screen
+#define debounceTime 30 // shorter presses are contact bounce
 
 unsigned long button1_PressedTime = 0;
 unsigned long button2_PressedTime = 0;
-unsigned int button2_PressedCounter = 0;
 bool button1_hold = false;
 bool button2_hold = false;
+bool button2_longDone = false;
 
-// Check if reset button (GPIO0) is pressed and held for 5 seconds
+// Button 1 (GPIO0): press dismisses an alert, hold 5 s resets Wi-Fi credentials
 void handleButton1()
 {
     if (digitalRead(PIN_BUTTON_1) == LOW)
@@ -22,6 +24,7 @@ void handleButton1()
         {
             button1_hold = true;
             button1_PressedTime = millis();
+            alertDismiss();
         }
         else if (millis() - button1_PressedTime >= resetTime)
         {
@@ -34,50 +37,33 @@ void handleButton1()
     }
 }
 
+// Button 2 (GPIO21): short press shows the next pair (or dismisses an alert),
+// hold rotates the screen
 void handleButton2()
 {
-    // Check if 2 button (GPIO21) is pressed or held for few seconds
-    if (digitalRead(PIN_BUTTON_2) == LOW)
+    bool pressed = digitalRead(PIN_BUTTON_2) == LOW;
+
+    if (pressed && !button2_hold)
     {
-        if (!button2_hold)
-        {
-            button2_PressedCounter++;
-            button2_hold = true;
-            button2_PressedTime = millis();
-
-            // triggering from second push.
-            if (button2_PressedCounter > 1)
-            {
-                if (button2_PressedCounter - 1 >= sizeof screenTickers / sizeof *screenTickers)
-                {
-                    button2_PressedCounter = 0;
-                }
-
-                if (button2_PressedCounter > 1)
-                {
-                    currentTicker = screenTickers[button2_PressedCounter - 1];
-                }
-                else
-                {
-                    currentTicker = screenTickers[0];
-                }
-                setTickerInfo(); // switch between tickers (all streams are already subscribed)
-            }
-        }
-        else if (button2_PressedCounter == 1 && millis() - button2_PressedTime >= rotateTime)
-        {
-            Serial.println("[DEBUG] Toggle screen rotation");
-            toggleScreenRotation();
-            button2_PressedCounter = 0;
-        }
+        button2_hold = true;
+        button2_longDone = false;
+        button2_PressedTime = millis();
     }
-    else if (button2_hold)
+    else if (pressed && !button2_longDone && millis() - button2_PressedTime >= rotateTime)
+    {
+        Serial.println("[DEBUG] Toggle screen rotation");
+        toggleScreenRotation();
+        button2_longDone = true;
+    }
+    else if (!pressed && button2_hold)
     {
         button2_hold = false;
-    }
-    // refresh counter. let's switch tickers from the beggining.
-    else if (button2_PressedCounter == 1 && millis() - button2_PressedTime > rotateTime * 2)
-    {
-        button2_PressedCounter = 0;
+        if (!button2_longDone && millis() - button2_PressedTime >= debounceTime)
+        {
+            if (alertActive())
+                alertDismiss();
+            else
+                selectNextTicker();
+        }
     }
 }

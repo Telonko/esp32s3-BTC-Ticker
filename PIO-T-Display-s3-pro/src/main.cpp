@@ -13,10 +13,9 @@
 #include "pin_config.h"
 #include "handleButtons.h"
 #include "Battery.h"
-
-#if __has_include("secrets.h")
-    #include "secrets.h"
-#endif
+#include "Settings.h"
+#include "Alerts.h"
+#include "WebConfig.h"
 
 // Define display and touch hardware specifics
 LilyGo_Class amoled;
@@ -24,10 +23,23 @@ LilyGo_Class amoled;
 // Example Wi-Fi provisioning QR code data (to be generated dynamically)
 const char *pop = "12345678";               // Proof of possession
 const char *service_name = "crypto_ticker"; // Name of your device
-const uint8_t home_brighest = 50;
+const uint8_t default_brightness = 100;
+const uint8_t low_battery_brightness = 20;
+const int low_battery_percent = 10;
+
+// Burn-in protection: every PIXEL_SHIFT_INTERVAL_MS the whole ticker screen
+// moves to the next offset (the background has a black border, so the edge
+// never shows).
+#define PIXEL_SHIFT_INTERVAL_MS (3 * 60 * 1000UL)
+#define PIXEL_SHIFT_PX 2
+
+static int lastBatteryPercent = 100;
 
 void SysProvEvent(arduino_event_t *sys_event);
 void toggleScreenRotation();
+void startApp();
+void updateBrightness();
+void pixelShiftStep();
 
 static const char *resetReasonName(uint8_t reason)
 {
@@ -105,47 +117,30 @@ void setup()
     // Show the QR code in the container after initializing the screen
     showQRCodeInContainer(service_name, pop);
 
+    settingsLoad();
+
     // Show the loading screen; it stays up while Wi-Fi is connecting
     lv_scr_load(ui_loading);
     lv_task_handler();
 
-    // Check if Wi-Fi is already provisioned
-    if (isProvisioned())
+    if (wifiInit())
     {
-        Serial.println("[DEBUG] Wi-Fi is already provisioned.");
-
-        // Connect to Wi-Fi with saved credentials
-        if (WiFi.status() != WL_CONNECTED)
+        // Known networks: wait for the first attempt (scan + connect) while
+        // keeping the loading animation alive, then show the ticker anyway;
+        // wifiLoop() keeps retrying in the background.
+        while (wifiFirstAttemptPending())
         {
-            WiFi.begin();
-            WiFi.setTxPower(WIFI_TX_POWER);
-
-            // Wait for the connection for up to 10 seconds
-            unsigned long startAttemptTime = millis();
-            while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000)
-            {
-                lv_task_handler(); // Handle LVGL tasks to update the screen
-                delay(20);
-            }
+            wifiLoop();
+            lv_task_handler();
+            delay(20);
         }
-
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            Serial.println("[DEBUG] Connected to Wi-Fi. Starting background tasks.");
-            onWiFiConnected();
-            lv_obj_del(ui_wifiProv); // Provisioning UI is not needed anymore
-            ui_wifiProv = NULL;
-        }
-        else
-        {
-            Serial.println("[ERROR] Failed to connect to Wi-Fi.");
-            setupProvisioning(pop, service_name, NULL, false);
-            lv_scr_load(ui_wifiProv); // Load the Wi-Fi provisioning screen
-        }
+        startApp();
+        lv_obj_del(ui_wifiProv); // Provisioning UI is not needed anymore
+        ui_wifiProv = NULL;
     }
     else
     {
-        Serial.println("[DEBUG] Device is not provisioned. Starting provisioning...");
+        Serial.println("[DEBUG] No known Wi-Fi networks. Starting provisioning...");
         setupProvisioning(pop, service_name, NULL, true);
     }
 
@@ -161,6 +156,9 @@ void loop()
     delay(5);
 
     processProvEvents();
+    wifiLoop();
+    webConfigLoop();
+    alertLoop();
 
     // Update time, battery and Wi-Fi icon once per second; labels are redrawn only on change
     static unsigned long lastTimeUpdate = 0;
@@ -170,18 +168,27 @@ void loop()
         lastTimeUpdate = millis();
 
         static int shownBattery = -1;
+        static int8_t shownCharging = -1;
         int battery = batteryUpdate();
-        if (battery != shownBattery)
+        int8_t charging = batteryCharging() ? 1 : 0;
+        lastBatteryPercent = battery;
+        if (battery != shownBattery || charging != shownCharging)
         {
             shownBattery = battery;
-            lv_label_set_text_fmt(ui_Label_Battary, "%d%%", battery);
+            shownCharging = charging;
+            if (charging)
+                lv_label_set_text_fmt(ui_Label_Battary, LV_SYMBOL_CHARGE " %d%%", battery);
+            else
+                lv_label_set_text_fmt(ui_Label_Battary, "%d%%", battery);
         }
+
+        updateBrightness();
 
         static unsigned long lastBatteryLog = 0;
         if (lastBatteryLog == 0 || millis() - lastBatteryLog > 30000)
         {
             lastBatteryLog = millis();
-            Serial.printf("[BAT] %u mV, %d%%\n", batteryMilliVolts(), battery);
+            Serial.printf("[BAT] %u mV, %d%%%s\n", batteryMilliVolts(), battery, charging ? ", charging" : "");
         }
 
         static int8_t shownWifi = -1;
@@ -199,6 +206,13 @@ void loop()
     // Push fresh prices / connection state from the network task to the UI
     handleBinanceWebSocket();
 
+    static unsigned long lastPixelShift = 0;
+    if (millis() - lastPixelShift > PIXEL_SHIFT_INTERVAL_MS)
+    {
+        lastPixelShift = millis();
+        pixelShiftStep();
+    }
+
     handleButton1();
     handleButton2();
 }
@@ -215,32 +229,90 @@ void updatePriceUI(double btcRate, double highRate, double lowRate)
         return;
     }
 
-    // Update Bitcoin Rate with two decimal places (e.g., 12345.67)
-    lv_label_set_text_fmt(ui_Label_Price_Rate, "%.2f", btcRate);
+    // Cheap coins (DOGE, SHIB...) need more decimals
+    const char *format = btcRate >= 1 ? "%.2f" : btcRate >= 0.01 ? "%.4f" : "%.8f";
+    lv_label_set_text_fmt(ui_Label_Price_Rate, format, btcRate);
 
     // Update High and Low Rates (no "High:" or "Low:" prefixes, just the price)
-    lv_label_set_text_fmt(ui_LabelPricehigh, "%.2f", highRate);
-    lv_label_set_text_fmt(ui_labelPriceLow, "%.2f", lowRate);
+    lv_label_set_text_fmt(ui_LabelPricehigh, format, highRate);
+    lv_label_set_text_fmt(ui_labelPriceLow, format, lowRate);
 }
 
-// Called once Wi-Fi is up (at boot or after provisioning / reconnect)
-void onWiFiConnected()
+static bool isNightTime()
+{
+    int hour = localHour();
+    uint8_t start = settings.nightStartHour, end = settings.nightEndHour;
+    if (hour < 0 || start == end)
+        return false;
+    if (start < end)
+        return hour >= start && hour < end;
+    return hour >= start || hour < end; // e.g. 23..7 crosses midnight
+}
+
+// Brightness = the lowest of: location default, night mode, low battery
+void updateBrightness()
+{
+    uint8_t brightness = default_brightness;
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        String ssid = WiFi.SSID();
+        for (int i = 0; i < wifiList.count; i++)
+        {
+            if (ssid == wifiList.networks[i].ssid && wifiList.networks[i].brightness)
+                brightness = wifiList.networks[i].brightness;
+        }
+    }
+    if (isNightTime())
+        brightness = min(brightness, settings.nightBrightness);
+    if (lastBatteryPercent <= low_battery_percent && !batteryCharging())
+        brightness = min(brightness, low_battery_brightness);
+
+    if (brightness != amoled.getBrightness())
+    {
+        Serial.printf("[UI] Brightness %u\n", brightness);
+        amoled.setBrightness(brightness);
+    }
+}
+
+void pixelShiftStep()
+{
+    static const int8_t offsets[][2] = {
+        {0, 0}, {1, 0}, {1, 1}, {0, 1}, {-1, 1}, {-1, 0}, {-1, -1}, {0, -1}, {1, -1},
+    };
+    static uint8_t step = 0;
+    step = (step + 1) % (sizeof(offsets) / sizeof(offsets[0]));
+
+    lv_coord_t dx = offsets[step][0] * PIXEL_SHIFT_PX;
+    lv_coord_t dy = offsets[step][1] * PIXEL_SHIFT_PX;
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(ui_ticker); i++)
+    {
+        lv_obj_t *child = lv_obj_get_child(ui_ticker, i);
+        lv_obj_set_style_translate_x(child, dx, 0);
+        lv_obj_set_style_translate_y(child, dy, 0);
+    }
+}
+
+// Shows the ticker screen and starts background services (once).
+// Works without Wi-Fi too: the network task waits for a connection.
+void startApp()
 {
     static bool started = false;
     if (started)
-        return; // Wi-Fi reconnects are handled by the network task
+        return;
 
     started = true;
-#ifdef WIFI_SSID
-    if (WiFi.SSID() == WIFI_SSID)
-    {
-        amoled.setBrightness(home_brighest);
-    }
-#endif
     initiateNTPTimeSync();  // Non-blocking
     initBinanceWebSocket(); // Starts the network task
     setTickerInfo();
+    updateBrightness();
     lv_scr_load(ui_ticker);
+}
+
+// Called on every Wi-Fi connection (boot, reconnect, provisioning)
+void onWiFiConnected()
+{
+    startApp();
+    webConfigBegin(); // once
 }
 
 void toggleScreenRotation()
