@@ -75,6 +75,9 @@ static void logResetReason()
 
 void setup()
 {
+    // 80 MHz is the minimum for Wi-Fi and plenty for a ticker; saves power
+    setCpuFrequencyMhz(80);
+
     Serial.begin(115200);
     // Without a USB host, writes to USB-CDC would block for the TX timeout
     Serial.setTxTimeoutMs(0);
@@ -203,6 +206,15 @@ void loop()
 // Function to update Bitcoin-related UI elements
 void updatePriceUI(double btcRate, double highRate, double lowRate)
 {
+    if (btcRate <= 0)
+    {
+        // No data yet for this ticker
+        lv_label_set_text(ui_Label_Price_Rate, "--");
+        lv_label_set_text(ui_LabelPricehigh, "--");
+        lv_label_set_text(ui_labelPriceLow, "--");
+        return;
+    }
+
     // Update Bitcoin Rate with two decimal places (e.g., 12345.67)
     lv_label_set_text_fmt(ui_Label_Price_Rate, "%.2f", btcRate);
 

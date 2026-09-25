@@ -1,7 +1,8 @@
 // BinanceWebSocket.cpp
 //
 // Threading model:
-//  - networkTask (core 0) owns the WebSocket: connect, TLS, parsing.
+//  - networkTask (core 0) owns the WebSocket: connect, TLS, parsing,
+//    SUBSCRIBE/UNSUBSCRIBE when the UI switches currentTicker.
 //  - loop() (core 1) owns LVGL and only reads the shared quotes.
 // LVGL is not thread-safe, so nothing in the network task touches UI objects.
 
@@ -29,6 +30,10 @@ static Quote quotes[TICKERS_COUNT];
 static portMUX_TYPE quotesMux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint32_t quotesVersion = 0;
 static volatile bool wsConnected = false;
+
+// Network task only
+static int subscribedTicker = -1;
+static uint32_t requestId = 0;
 
 // UI-side state
 static uint32_t shownVersion = 0;
@@ -69,11 +74,10 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
     {
         // Keep only the fields we need: much less RAM and parsing time
         JsonDocument filter;
-        JsonObject filterData = filter["data"].to<JsonObject>();
-        filterData["s"] = true;
-        filterData["c"] = true;
-        filterData["h"] = true;
-        filterData["l"] = true;
+        filter["s"] = true;
+        filter["c"] = true;
+        filter["h"] = true;
+        filter["l"] = true;
 
         JsonDocument doc;
         DeserializationError error = deserializeJson(doc, payload, length, DeserializationOption::Filter(filter));
@@ -83,7 +87,8 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
             return;
         }
 
-        JsonObject data = doc["data"];
+        // Subscription replies ({"result":null,"id":N}) have no symbol
+        JsonObject data = doc.as<JsonObject>();
         int idx = symbolIndex(data["s"] | "");
         if (idx < 0)
             return;
@@ -105,6 +110,7 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
                       wsConnected ? "Disconnected" : "Connection failed",
                       ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         wsConnected = false;
+        subscribedTicker = -1;
         break;
     case WStype_CONNECTED:
         Serial.println("[WS] Connected");
@@ -118,21 +124,32 @@ static void onWebSocketEvent(WStype_t type, uint8_t *payload, size_t length)
     }
 }
 
+static void sendSubscription(const char *method, int ticker)
+{
+    char msg[96];
+    snprintf(msg, sizeof(msg), "{\"method\":\"%s\",\"params\":[\"%susdt@miniTicker\"],\"id\":%u}",
+             method, screenTickers[ticker], ++requestId);
+    Serial.printf("[WS] %s\n", msg);
+    webSocket.sendTXT(msg);
+}
+
+// Only the displayed ticker is subscribed. Switching sends UNSUBSCRIBE/SUBSCRIBE
+// over the same connection, so no reconnect and no new TLS handshake.
+static void syncSubscription()
+{
+    int wanted = tickerIndex(currentTicker);
+    if (!wsConnected || wanted < 0 || wanted == subscribedTicker)
+        return;
+
+    if (subscribedTicker >= 0)
+        sendSubscription("UNSUBSCRIBE", subscribedTicker);
+    sendSubscription("SUBSCRIBE", wanted);
+    subscribedTicker = wanted;
+}
+
 static void networkTask(void *)
 {
-    // Combined stream for all tickers at once: switching tickers on screen
-    // no longer requires a reconnect (and a new TLS handshake).
-    String path = "/stream?streams=";
-    for (int i = 0; i < TICKERS_COUNT; i++)
-    {
-        if (i)
-            path += '/';
-        path += screenTickers[i];
-        path += "usdt@miniTicker";
-    }
-    Serial.printf("[WS] Subscribing to %s\n", path.c_str());
-
-    webSocket.beginSSL(WS_HOST, WS_PORT, path.c_str());
+    webSocket.beginSSL(WS_HOST, WS_PORT, "/ws");
     webSocket.onEvent(onWebSocketEvent);
     webSocket.setReconnectInterval(WS_RECONNECT_INTERVAL_MS);
     // Detect half-open connections (Wi-Fi AP alive, internet gone)
@@ -150,6 +167,7 @@ static void networkTask(void *)
         }
 
         webSocket.loop();
+        syncSubscription();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -223,7 +241,15 @@ void setTickerInfo()
         lv_obj_add_flag(ui_img_symbol_btc, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Show the cached price of the new ticker right away
+    // The new ticker was not streamed while unsubscribed: drop its stale price,
+    // labels show "--" until the first update arrives (~1 s)
+    int idx = tickerIndex(currentTicker);
+    if (idx >= 0)
+    {
+        portENTER_CRITICAL(&quotesMux);
+        quotes[idx] = {0, 0, 0};
+        portEXIT_CRITICAL(&quotesMux);
+    }
     shownQuote = {-1, -1, -1};
     showCurrentQuote();
 }

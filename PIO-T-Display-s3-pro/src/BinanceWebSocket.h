@@ -21,7 +21,8 @@ void initBinanceWebSocket();
 // Called from loop(): pushes fresh prices / connection state to LVGL.
 void handleBinanceWebSocket();
 
-// Refreshes ticker name, icon and cached price for currentTicker (UI thread only).
+// Refreshes ticker name and icon for currentTicker (UI thread only); the network
+// task then re-subscribes to the new pair.
 void setTickerInfo();
 
 #endif // BINANCEWEBSOCKET_H
